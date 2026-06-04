@@ -33,9 +33,9 @@
         # 2. 資料
         'data/ir_config_parameter.xml',
         # 3. 視圖
-        'views/line_user_views.xml',
-        'views/line_richmenu_views.xml',
         'views/line_logs_views.xml',
+        'views/line_richmenu_views.xml',
+        'views/line_user_views.xml',
         'views/res_partner_views.xml',
         'views/res_config_settings_views.xml',
         'views/menus.xml',
