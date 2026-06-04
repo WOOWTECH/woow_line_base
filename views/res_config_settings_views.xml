@@ -7,7 +7,7 @@
         <field name="arch" type="xml">
             <xpath expr="//form" position="inside">
                 <app data-string="LINE Base" string="LINE Base"
-                     data-key="woow_line_base"
+                     name="woow_line_base" data-key="woow_line_base"
                      groups="woow_line_base.group_line_manager">
 
                     <block title="LINE Login Channel" name="line_login">
