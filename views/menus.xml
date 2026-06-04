@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="menu_line_root" name="LINE"
+              sequence="90" groups="woow_line_base.group_line_user"/>
+
+    <menuitem id="menu_line_users" name="LINE 用戶"
+              parent="menu_line_root" action="action_line_user" sequence="10"/>
+
+    <menuitem id="menu_line_richmenu_parent" name="Rich Menu"
+              parent="menu_line_root" sequence="20"/>
+    <menuitem id="menu_line_richmenu" name="Rich Menu"
+              parent="menu_line_richmenu_parent" action="action_line_richmenu" sequence="10"/>
+    <menuitem id="menu_line_richmenu_alias" name="Rich Menu 別名"
+              parent="menu_line_richmenu_parent" action="action_line_richmenu_alias" sequence="20"/>
+
+    <menuitem id="menu_line_logs" name="記錄"
+              parent="menu_line_root" sequence="30"/>
+    <menuitem id="menu_line_event_log" name="事件記錄"
+              parent="menu_line_logs" action="action_line_event_log" sequence="10"/>
+    <menuitem id="menu_line_push_log" name="推播記錄"
+              parent="menu_line_logs" action="action_line_push_log" sequence="20"/>
+
+    <menuitem id="menu_line_config" name="設定"
+              parent="menu_line_root"
+              action="base.res_config_setting_act_window"
+              sequence="99" groups="woow_line_base.group_line_manager"/>
+</odoo>

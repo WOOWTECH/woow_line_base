@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 360 度 LINE 用戶視圖 -->
+<odoo>
+
+    <!-- LINE User List -->
+    <record id="line_user_view_tree" model="ir.ui.view">
+        <field name="name">line.user.tree</field>
+        <field name="model">line.user</field>
+        <field name="arch" type="xml">
+            <list string="LINE 用戶">
+                <field name="line_user_id"/>
+                <field name="display_name"/>
+                <field name="email"/>
+                <field name="partner_id"/>
+                <field name="is_follower" widget="boolean_toggle"/>
+                <field name="is_blocked"/>
+                <field name="notification_enabled" widget="boolean_toggle"/>
+                <field name="current_richmenu_id" optional="show"/>
+                <field name="follow_date"/>
+                <field name="last_login"/>
+                <field name="push_count"/>
+                <field name="event_count"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- LINE User Form — 360 度視圖 -->
+    <record id="line_user_view_form" model="ir.ui.view">
+        <field name="name">line.user.form</field>
+        <field name="model">line.user</field>
+        <field name="arch" type="xml">
+            <form string="LINE 用戶">
+                <header>
+                    <button name="push_text" type="object" string="發送測試訊息"
+                            class="btn-primary" groups="woow_line_base.group_line_manager"/>
+                    <button name="bind_partner" type="object" string="綁定聯絡人"
+                            class="btn-secondary" invisible="partner_id"/>
+                    <button name="unbind" type="object" string="解除綁定"
+                            class="btn-secondary" invisible="not partner_id"
+                            confirm="確定要解除與聯絡人的綁定嗎？"/>
+                </header>
+                <sheet>
+                    <!-- Smart Buttons -->
+                    <div class="oe_button_box" name="button_box">
+                        <!-- 聯絡人（永遠顯示，有綁定時可點擊） -->
+                        <button class="oe_stat_button" type="object"
+                                name="action_open_partner" icon="fa-address-card"
+                                invisible="not partner_id">
+                            <field name="partner_id" widget="statinfo" string="聯絡人"/>
+                        </button>
+                        <!-- 推播記錄 -->
+                        <button name="%(woow_line_base.action_line_push_log)d"
+                                type="action" class="oe_stat_button" icon="fa-paper-plane"
+                                context="{'search_default_line_user_id': id}">
+                            <field name="push_count" widget="statinfo" string="推播"/>
+                        </button>
+                        <!-- 事件記錄 -->
+                        <button name="%(woow_line_base.action_line_event_log)d"
+                                type="action" class="oe_stat_button" icon="fa-list"
+                                context="{'search_default_line_user_id': id}">
+                            <field name="event_count" widget="statinfo" string="事件"/>
+                        </button>
+                    </div>
+
+                    <div class="oe_title">
+                        <label for="display_name"/>
+                        <h1><field name="display_name"/></h1>
+                    </div>
+
+                    <!-- Tab 1: LINE 資料 -->
+                    <notebook>
+                        <page string="LINE 資料" name="line_data">
+                            <group>
+                                <group string="基本資料">
+                                    <field name="line_user_id"/>
+                                    <field name="picture_url" widget="url"/>
+                                    <field name="status_message"/>
+                                    <field name="email"/>
+                                    <field name="preferred_lang"/>
+                                </group>
+                                <group string="狀態">
+                                    <field name="is_follower"/>
+                                    <field name="is_blocked"/>
+                                    <field name="notification_enabled"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="時間軸">
+                                    <field name="follow_date"/>
+                                    <field name="bound_at"/>
+                                    <field name="last_login"/>
+                                    <field name="unfollow_date"/>
+                                </group>
+                                <group string="Rich Menu">
+                                    <field name="current_richmenu_id"/>
+                                </group>
+                            </group>
+                        </page>
+
+                        <!-- Tab 2: 聯絡人資訊 -->
+                        <page string="聯絡人資訊" name="partner_info">
+                            <group invisible="not partner_id">
+                                <group>
+                                    <field name="partner_id" readonly="1"/>
+                                </group>
+                            </group>
+                            <div invisible="partner_id" class="text-muted text-center p-4">
+                                <p class="mb-2">此 LINE 用戶尚未綁定聯絡人</p>
+                                <button name="bind_partner" type="object" string="搜尋並綁定既有聯絡人"
+                                        class="btn btn-primary me-2"/>
+                            </div>
+                        </page>
+
+                        <!-- Tab 3: 互動紀錄（最近推播 + 事件） -->
+                        <page string="互動紀錄" name="interaction_log">
+                            <group string="最近推播">
+                                <field name="push_count"/>
+                            </group>
+                            <group string="最近事件">
+                                <field name="event_count"/>
+                            </group>
+                        </page>
+
+                        <!-- Tab 4: 設定 -->
+                        <page string="設定" name="settings">
+                            <group>
+                                <group string="通知偏好">
+                                    <field name="notification_enabled"/>
+                                    <field name="preferred_lang"/>
+                                </group>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- LINE User Search -->
+    <record id="line_user_view_search" model="ir.ui.view">
+        <field name="name">line.user.search</field>
+        <field name="model">line.user</field>
+        <field name="arch" type="xml">
+            <search string="搜尋 LINE 用戶">
+                <field name="display_name"/>
+                <field name="line_user_id"/>
+                <field name="email"/>
+                <field name="partner_id"/>
+                <filter name="followers" string="追蹤中" domain="[('is_follower', '=', True)]"/>
+                <filter name="blocked" string="已封鎖" domain="[('is_blocked', '=', True)]"/>
+                <filter name="bound" string="已綁定" domain="[('partner_id', '!=', False)]"/>
+                <filter name="unbound" string="未綁定" domain="[('partner_id', '=', False)]"/>
+                <group expand="0" string="分組">
+                    <filter name="group_follower" string="追蹤狀態" context="{'group_by': 'is_follower'}"/>
+                    <filter name="group_richmenu" string="Rich Menu" context="{'group_by': 'current_richmenu_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Action -->
+    <record id="action_line_user" model="ir.actions.act_window">
+        <field name="name">LINE 用戶</field>
+        <field name="res_model">line.user</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="line_user_view_search"/>
+        <field name="context">{'search_default_followers': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">尚無 LINE 用戶</p>
+            <p>LINE 用戶會在加好友或使用 LIFF 時自動建立。</p>
+        </field>
+    </record>
+
+</odoo>

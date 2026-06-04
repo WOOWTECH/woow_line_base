@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 聯絡人 form 加 LINE smart button + 分頁 -->
+<odoo>
+    <record id="res_partner_view_form_line" model="ir.ui.view">
+        <field name="name">res.partner.form.line</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button class="oe_stat_button" type="action" icon="fa-commenting"
+                        name="%(woow_line_base.action_line_user)d"
+                        context="{'search_default_partner_id': id}">
+                    <field name="has_line_bound" widget="boolean" string="LINE"/>
+                </button>
+            </xpath>
+            <xpath expr="//page[@name='internal_notes']" position="after">
+                <page string="LINE 整合" name="line_integration"
+                      groups="woow_line_base.group_line_user">
+                    <group string="LINE 帳號">
+                        <field name="line_user_ids" nolabel="1">
+                            <list create="0" edit="0">
+                                <field name="display_name"/>
+                                <field name="line_user_id"/>
+                                <field name="is_follower"/>
+                                <field name="notification_enabled" widget="boolean_toggle"/>
+                                <field name="last_login"/>
+                                <field name="current_richmenu_id"/>
+                                <field name="push_count"/>
+                            </list>
+                        </field>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+    <record id="res_partner_view_tree_line" model="ir.ui.view">
+        <field name="name">res.partner.tree.line</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='email']" position="after">
+                <field name="has_line_bound" string="LINE" optional="show"/>
+            </xpath>
+        </field>
+    </record>
+    <record id="res_partner_view_search_line" model="ir.ui.view">
+        <field name="name">res.partner.search.line</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_res_partner_filter"/>
+        <field name="arch" type="xml">
+            <xpath expr="//filter[@name='inactive']" position="after">
+                <separator/>
+                <filter name="line_bound" string="已綁定 LINE" domain="[('has_line_bound', '=', True)]"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

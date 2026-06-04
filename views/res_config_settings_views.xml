@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_line" model="ir.ui.view">
+        <field name="name">res.config.settings.form.line.base</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app data-string="LINE Base" string="LINE Base"
+                     data-key="woow_line_base"
+                     groups="woow_line_base.group_line_manager">
+
+                    <block title="LINE Login Channel" name="line_login">
+                        <setting string="Channel ID">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="line_login_channel_id" class="col-lg-3 o_light_label"/>
+                                    <field name="line_login_channel_id" class="col-lg-6"/>
+                                </div>
+                            </div>
+                        </setting>
+                        <setting string="Channel Secret">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="line_login_channel_secret" class="col-lg-3 o_light_label"/>
+                                    <field name="line_login_channel_secret" class="col-lg-6" password="True"/>
+                                </div>
+                            </div>
+                        </setting>
+                    </block>
+
+                    <block title="LINE Messaging API" name="line_messaging">
+                        <setting string="Channel ID">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="line_messaging_channel_id" class="col-lg-3 o_light_label"/>
+                                    <field name="line_messaging_channel_id" class="col-lg-6"/>
+                                </div>
+                            </div>
+                        </setting>
+                        <setting string="Channel Secret">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="line_messaging_channel_secret" class="col-lg-3 o_light_label"/>
+                                    <field name="line_messaging_channel_secret" class="col-lg-6" password="True"/>
+                                </div>
+                            </div>
+                        </setting>
+                        <setting string="Access Token">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="line_messaging_access_token" class="col-lg-3 o_light_label"/>
+                                    <field name="line_messaging_access_token" class="col-lg-6" password="True"/>
+                                </div>
+                            </div>
+                        </setting>
+                    </block>
+
+                    <block title="管理員設定" name="line_admin">
+                        <setting string="管理員 LINE User ID" help="用於預覽 Rich Menu">
+                            <div class="content-group">
+                                <div class="row mt16">
+                                    <label for="line_admin_user_id" class="col-lg-3 o_light_label"/>
+                                    <field name="line_admin_user_id" class="col-lg-6"/>
+                                </div>
+                            </div>
+                        </setting>
+                    </block>
+
+                </app>
+            </xpath>
+        </field>
+    </record>
+</odoo>
