@@ -3,7 +3,7 @@
 # LINE 基礎模組 — 統一 API 客戶端、用戶身份、Rich Menu 管理
 {
     'name': 'WOOW LINE Base',
-    'version': '18.0.1.0.0',
+    'version': '18.0.2.0.0',
     'category': 'Marketing',
     'summary': 'LINE 基礎層：統一 API、用戶身份、Rich Menu、推播記錄',
     'description': """
