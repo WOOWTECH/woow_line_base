@@ -8,3 +8,4 @@ from . import line_push_log
 from . import res_partner
 from . import res_config_settings
 from . import line_flex_factory
+from . import mail_notification_line
