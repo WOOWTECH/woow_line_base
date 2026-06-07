@@ -58,6 +58,17 @@ class LineUser(models.Model):
     # 綁定 / 解綁
     # ------------------------------------------------------------------
 
+    def action_bind_partner(self):
+        """View 按鈕：開啟聯絡人選擇視窗"""
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': '選擇聯絡人',
+            'res_model': 'res.partner',
+            'view_mode': 'list,form',
+            'target': 'new',
+        }
+
     def bind_partner(self, partner_id):
         self.ensure_one()
         partner = self.env['res.partner'].browse(partner_id)

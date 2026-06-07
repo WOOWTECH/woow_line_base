@@ -30,7 +30,7 @@
         <field name="arch" type="xml">
             <form string="LINE 用戶">
                 <header>
-                    <button name="bind_partner" type="object" string="綁定聯絡人"
+                    <button name="action_bind_partner" type="object" string="綁定聯絡人"
                             class="btn-secondary" invisible="partner_id"/>
                     <button name="unbind" type="object" string="解除綁定"
                             class="btn-secondary" invisible="not partner_id"
@@ -79,7 +79,7 @@
                             </group>
                             <div invisible="partner_id" class="text-muted text-center p-4">
                                 <p class="mb-2">此 LINE 用戶尚未綁定聯絡人</p>
-                                <button name="bind_partner" type="object" string="搜尋並綁定既有聯絡人"
+                                <button name="action_bind_partner" type="object" string="搜尋並綁定既有聯絡人"
                                         class="btn btn-primary me-2"/>
                             </div>
                         </page>
