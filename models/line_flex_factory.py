@@ -287,6 +287,11 @@ class LineFlexFactory(models.AbstractModel):
         }
 
     def _get_document_url(self, model, res_id):
-        """Return portal home URL via LIFF redirect for authenticated access."""
+        """Return portal home URL via LIFF for authenticated access in LINE."""
+        liff_id = self.env['ir.config_parameter'].sudo().get_param(
+            'woow_line_bridge.liff_id_member', '') or self.env[
+            'ir.config_parameter'].sudo().get_param('woow_line_base.liff_id', '')
+        if liff_id:
+            return 'https://liff.line.me/%s/home' % liff_id
         base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url', '')
         return '%s/liff/redirect/home' % base_url if base_url else ''
