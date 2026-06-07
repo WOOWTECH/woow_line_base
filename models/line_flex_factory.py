@@ -287,14 +287,6 @@ class LineFlexFactory(models.AbstractModel):
         }
 
     def _get_document_url(self, model, res_id):
-        """Resolve portal URL for a record."""
-        if not model or not res_id:
-            return ''
-        try:
-            record = self.env[model].sudo().browse(res_id)
-            if record.exists() and hasattr(record, 'access_url'):
-                base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url', '')
-                return base_url + record.access_url
-        except Exception:
-            pass
-        return ''
+        """Return portal home URL via LIFF redirect for authenticated access."""
+        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url', '')
+        return '%s/liff/redirect/home' % base_url if base_url else ''
