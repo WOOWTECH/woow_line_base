@@ -50,30 +50,9 @@ class LineUser(models.Model):
     push_count = fields.Integer('推播次數', default=0)
     event_count = fields.Integer('事件次數', default=0)
 
-    # Rich Menu
-    current_richmenu_id = fields.Many2one('line.richmenu', string='目前 Rich Menu',
-        ondelete='set null')
-
     _sql_constraints = [
         ('line_user_id_unique', 'UNIQUE(line_user_id)', 'LINE User ID 必須唯一'),
     ]
-
-    # ------------------------------------------------------------------
-    # 推播快捷方法
-    # ------------------------------------------------------------------
-
-    def push_text(self, text):
-        self.ensure_one()
-        messages = [self.env['line.api.service'].build_text_message(text)]
-        return self.env['line.api.service'].push(self, messages)
-
-    def push_messages(self, messages):
-        return self.env['line.api.service'].push(self, messages)
-
-    def push_flex(self, alt_text, contents):
-        self.ensure_one()
-        messages = [{'type': 'flex', 'altText': alt_text, 'contents': contents}]
-        return self.env['line.api.service'].push(self, messages)
 
     # ------------------------------------------------------------------
     # 綁定 / 解綁
@@ -92,23 +71,6 @@ class LineUser(models.Model):
         self.ensure_one()
         self.write({'partner_id': False, 'bound_at': False})
         return True
-
-    # ------------------------------------------------------------------
-    # 動作（View 按鈕用）
-    # ------------------------------------------------------------------
-
-    def action_open_partner(self):
-        """Smart Button: 開啟綁定的聯絡人"""
-        self.ensure_one()
-        if self.partner_id:
-            return {
-                'type': 'ir.actions.act_window',
-                'res_model': 'res.partner',
-                'res_id': self.partner_id.id,
-                'view_mode': 'form',
-                'target': 'current',
-            }
-        return False
 
     # ------------------------------------------------------------------
     # 查找 / 建立

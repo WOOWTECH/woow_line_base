@@ -56,27 +56,6 @@
                         </setting>
                     </block>
 
-                    <block title="管理員設定" name="line_admin">
-                        <setting string="管理員 LINE User ID" help="用於預覽 Rich Menu">
-                            <div class="content-group">
-                                <div class="row mt16">
-                                    <label for="line_admin_user_id" class="col-lg-3 o_light_label"/>
-                                    <field name="line_admin_user_id" class="col-lg-6"/>
-                                </div>
-                            </div>
-                        </setting>
-                    </block>
-
-                    <block title="自動推送通知" name="line_auto_notify">
-                        <setting string="自動推送 LINE 通知" help="啟用後，當任何 mail.thread 模型的追蹤欄位變更時，自動推送 LINE Flex 通知給有綁定 LINE 的跟隨者。">
-                            <div class="content-group">
-                                <div class="row mt16">
-                                    <field name="auto_line_notify" class="col-lg-6"/>
-                                </div>
-                            </div>
-                        </setting>
-                    </block>
-
                 </app>
             </xpath>
         </field>

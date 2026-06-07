@@ -15,7 +15,6 @@
                 <field name="is_follower" widget="boolean_toggle"/>
                 <field name="is_blocked"/>
                 <field name="notification_enabled" widget="boolean_toggle"/>
-                <field name="current_richmenu_id" optional="show"/>
                 <field name="follow_date"/>
                 <field name="last_login"/>
                 <field name="push_count"/>
@@ -31,8 +30,6 @@
         <field name="arch" type="xml">
             <form string="LINE 用戶">
                 <header>
-                    <button name="push_text" type="object" string="發送測試訊息"
-                            class="btn-primary" groups="woow_line_base.group_line_manager"/>
                     <button name="bind_partner" type="object" string="綁定聯絡人"
                             class="btn-secondary" invisible="partner_id"/>
                     <button name="unbind" type="object" string="解除綁定"
@@ -40,27 +37,6 @@
                             confirm="確定要解除與聯絡人的綁定嗎？"/>
                 </header>
                 <sheet>
-                    <!-- Smart Buttons -->
-                    <div class="oe_button_box" name="button_box">
-                        <!-- 聯絡人（永遠顯示，有綁定時可點擊） -->
-                        <button class="oe_stat_button" type="object"
-                                name="action_open_partner" icon="fa-address-card"
-                                invisible="not partner_id">
-                            <field name="partner_id" widget="statinfo" string="聯絡人"/>
-                        </button>
-                        <!-- 推播記錄 -->
-                        <button name="%(woow_line_base.action_line_push_log)d"
-                                type="action" class="oe_stat_button" icon="fa-paper-plane"
-                                context="{'search_default_line_user_id': id}">
-                            <field name="push_count" widget="statinfo" string="推播"/>
-                        </button>
-                        <!-- 事件記錄 -->
-                        <button name="%(woow_line_base.action_line_event_log)d"
-                                type="action" class="oe_stat_button" icon="fa-list"
-                                context="{'search_default_line_user_id': id}">
-                            <field name="event_count" widget="statinfo" string="事件"/>
-                        </button>
-                    </div>
 
                     <div class="oe_title">
                         <label for="display_name"/>
@@ -90,9 +66,6 @@
                                     <field name="bound_at"/>
                                     <field name="last_login"/>
                                     <field name="unfollow_date"/>
-                                </group>
-                                <group string="Rich Menu">
-                                    <field name="current_richmenu_id"/>
                                 </group>
                             </group>
                         </page>
@@ -152,7 +125,6 @@
                 <filter name="unbound" string="未綁定" domain="[('partner_id', '=', False)]"/>
                 <group expand="0" string="分組">
                     <filter name="group_follower" string="追蹤狀態" context="{'group_by': 'is_follower'}"/>
-                    <filter name="group_richmenu" string="Rich Menu" context="{'group_by': 'current_richmenu_id'}"/>
                 </group>
             </search>
         </field>
