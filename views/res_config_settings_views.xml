@@ -8,6 +8,7 @@
             <xpath expr="//form" position="inside">
                 <app data-string="LINE Base" string="LINE Base"
                      name="woow_line_base" data-key="woow_line_base"
+                     logo="/woow_line_base/static/description/icon.png"
                      groups="woow_line_base.group_line_manager">
 
                     <block title="LINE Login Channel" name="line_login">
