@@ -11,6 +11,7 @@
                 <field name="line_user_id"/>
                 <field name="display_name"/>
                 <field name="email"/>
+                <field name="messaging_channel_name" optional="show"/>
                 <field name="partner_id"/>
                 <field name="is_follower" widget="boolean_toggle"/>
                 <field name="is_blocked"/>
@@ -52,6 +53,8 @@
                                     <field name="picture_url" widget="url"/>
                                     <field name="status_message"/>
                                     <field name="email"/>
+                                    <field name="messaging_channel_id"/>
+                                    <field name="messaging_channel_name"/>
                                     <field name="preferred_lang"/>
                                 </group>
                                 <group string="狀態">
@@ -125,6 +128,7 @@
                 <filter name="unbound" string="未綁定" domain="[('partner_id', '=', False)]"/>
                 <group expand="0" string="分組">
                     <filter name="group_follower" string="追蹤狀態" context="{'group_by': 'is_follower'}"/>
+                    <filter name="group_channel" string="Messaging Channel" context="{'group_by': 'messaging_channel_name'}"/>
                 </group>
             </search>
         </field>

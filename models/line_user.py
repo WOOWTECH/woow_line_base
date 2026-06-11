@@ -26,6 +26,14 @@ class LineUser(models.Model):
     status_message = fields.Char('狀態訊息')
     email = fields.Char('Email')
 
+    # Messaging Channel 來源
+    messaging_channel_id = fields.Char(
+        'Messaging Channel ID', index=True,
+        help='此用戶來自的 LINE Messaging API Channel ID')
+    messaging_channel_name = fields.Char(
+        'Messaging Channel',
+        help='Messaging API Channel 的顯示名稱')
+
     # 弱關聯 Partner
     partner_id = fields.Many2one('res.partner', string='聯絡人',
         ondelete='set null', index=True)
@@ -92,9 +100,15 @@ class LineUser(models.Model):
         return self.sudo().search([('line_user_id', '=', line_user_id)], limit=1)
 
     @api.model
-    def create_or_update_from_webhook(self, line_user_id, profile_data=None):
+    def create_or_update_from_webhook(self, line_user_id, profile_data=None,
+                                       messaging_channel_id=None,
+                                       messaging_channel_name=None):
         existing = self.find_by_line_uid(line_user_id)
         vals = {'line_user_id': line_user_id, 'is_follower': True, 'is_blocked': False}
+        if messaging_channel_id:
+            vals['messaging_channel_id'] = messaging_channel_id
+        if messaging_channel_name:
+            vals['messaging_channel_name'] = messaging_channel_name
         if profile_data:
             for src, dst in [('displayName', 'display_name'), ('pictureUrl', 'picture_url'),
                              ('statusMessage', 'status_message'), ('email', 'email')]:
