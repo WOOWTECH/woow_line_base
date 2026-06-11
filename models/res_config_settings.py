@@ -1,23 +1,4 @@
 # -*- coding: utf-8 -*-
 # woow_line_base/models/res_config_settings.py
-# 系統設定：Messaging API 金鑰
-from odoo import fields, models
-
-
-class ResConfigSettings(models.TransientModel):
-    _inherit = 'res.config.settings'
-
-    # LINE Login（LIFF 用）
-    line_login_channel_id = fields.Char('LINE Login Channel ID',
-        config_parameter='woow_line_base.login_channel_id')
-    line_login_channel_secret = fields.Char('LINE Login Channel Secret',
-        config_parameter='woow_line_base.login_channel_secret')
-
-    # Messaging API
-    line_messaging_channel_id = fields.Char('Messaging Channel ID',
-        config_parameter='woow_line_base.messaging_channel_id')
-    line_messaging_channel_secret = fields.Char('Messaging Channel Secret',
-        config_parameter='woow_line_base.messaging_channel_secret')
-    line_messaging_access_token = fields.Char('Messaging Access Token',
-        config_parameter='woow_line_base.messaging_access_token')
-
+# Settings fields removed — credentials managed via LINE Bridge (line.liff.config)
+# and LiveChat (im_livechat.channel) modules.

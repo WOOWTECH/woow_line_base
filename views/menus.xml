@@ -1,11 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
     <menuitem id="menu_line_root" name="LINE"
-              sequence="90" groups="woow_line_base.group_line_user"/>
+              sequence="90"
+              web_icon="woow_line_base,static/description/icon.png"
+              groups="woow_line_base.group_line_manager"/>
     <menuitem id="menu_line_users" name="LINE 用戶"
               parent="menu_line_root" action="action_line_user" sequence="10"/>
-    <menuitem id="menu_line_config" name="設定"
-              parent="menu_line_root"
-              action="base.res_config_setting_act_window"
-              sequence="99" groups="woow_line_base.group_line_manager"/>
 </odoo>

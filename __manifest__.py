@@ -28,6 +28,7 @@
         'views/res_config_settings_views.xml',
         'views/menus.xml',
     ],
+    'post_init_hook': '_post_init_hook',
     'application': True,
     'installable': True,
     'auto_install': False,
