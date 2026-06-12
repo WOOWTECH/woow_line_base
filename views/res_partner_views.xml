@@ -1,28 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 聯絡人 form 加 LINE 分頁 -->
+<!-- 聯絡人 form：LINE 整合分頁已移除，改用 LINE Bridge 的 smart button -->
 <odoo>
     <record id="res_partner_view_form_line" model="ir.ui.view">
         <field name="name">res.partner.form.line</field>
         <field name="model">res.partner</field>
         <field name="inherit_id" ref="base.view_partner_form"/>
         <field name="arch" type="xml">
-            <xpath expr="//page[@name='internal_notes']" position="after">
-                <page string="LINE 整合" name="line_integration"
-                      groups="woow_line_base.group_line_manager">
-                    <group string="LINE 帳號">
-                        <field name="line_user_ids" nolabel="1">
-                            <list create="0" edit="0">
-                                <field name="display_name"/>
-                                <field name="line_user_id"/>
-                                <field name="messaging_channel_name"/>
-                                <field name="is_follower"/>
-                                <field name="notification_enabled" widget="boolean_toggle"/>
-                                <field name="last_login"/>
-                                <field name="push_count"/>
-                            </list>
-                        </field>
-                    </group>
-                </page>
+            <xpath expr="//form" position="inside">
+                <!-- intentionally empty: LINE tab removed, use smart button instead -->
             </xpath>
         </field>
     </record>

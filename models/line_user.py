@@ -82,9 +82,24 @@ class LineUser(models.Model):
         partner = self.env['res.partner'].browse(partner_id)
         if not partner.exists():
             return False
-        self.write({'partner_id': partner_id, 'bound_at': fields.Datetime.now()})
+        vals = {'partner_id': partner_id, 'bound_at': fields.Datetime.now()}
+        # 同步 email：partner → line.user（或反向）
+        if partner.email and not self.email:
+            vals['email'] = partner.email
+        elif self.email and not partner.email:
+            partner.sudo().write({'email': self.email})
+        self.write(vals)
         _logger.info('LINE %s 綁定 partner %s', self.line_user_id, partner.name)
         return True
+
+    def write(self, vals):
+        res = super().write(vals)
+        # email 同步到已綁定的 partner
+        if 'email' in vals and vals['email']:
+            for rec in self:
+                if rec.partner_id and not rec.partner_id.email:
+                    rec.partner_id.sudo().write({'email': vals['email']})
+        return res
 
     def unbind(self):
         self.ensure_one()
