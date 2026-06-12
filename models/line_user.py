@@ -94,11 +94,12 @@ class LineUser(models.Model):
 
     def write(self, vals):
         res = super().write(vals)
-        # email 同步到已綁定的 partner
-        if 'email' in vals and vals['email']:
+        # email 雙向同步：line.user → partner（避免遞迴）
+        if 'email' in vals and not self.env.context.get('skip_email_sync'):
             for rec in self:
-                if rec.partner_id and not rec.partner_id.email:
-                    rec.partner_id.sudo().write({'email': vals['email']})
+                if rec.partner_id and rec.email != rec.partner_id.email:
+                    rec.partner_id.sudo().with_context(skip_email_sync=True).write(
+                        {'email': rec.email or False})
         return res
 
     def unbind(self):
