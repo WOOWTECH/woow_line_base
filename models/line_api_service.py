@@ -298,7 +298,7 @@ class LineApiService(models.AbstractModel):
                     headers=self._auth_headers(token),
                     json={'to': batch, 'messages': messages}, timeout=10)
                 if resp.status_code != 200:
-                    _logger.warning('multicast 失敗: %s', resp.status_code)
+                    _logger.warning('multicast 失敗: %s %s', resp.status_code, resp.text[:500])
                     return False
             except http_requests.RequestException:
                 _logger.exception('multicast 網路錯誤')
