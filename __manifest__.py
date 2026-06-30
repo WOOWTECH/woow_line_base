@@ -2,7 +2,7 @@
 # woow_line_base/__manifest__.py
 {
     'name': 'WOOW LINE Base',
-    'version': '18.0.3.0.0',
+    'version': '18.0.3.1.0',
     'category': 'Marketing',
     'summary': 'LINE 基礎層：統一 API 客戶端、用戶身份',
     'description': """
@@ -23,6 +23,7 @@
         'security/line_security.xml',
         'security/ir.model.access.csv',
         'data/ir_config_parameter.xml',
+        'wizard/line_bind_partner_wizard_views.xml',
         'views/line_user_views.xml',
         'views/res_partner_views.xml',
         'views/res_config_settings_views.xml',

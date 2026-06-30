@@ -67,14 +67,15 @@ class LineUser(models.Model):
     # ------------------------------------------------------------------
 
     def action_bind_partner(self):
-        """View 按鈕：開啟聯絡人選擇視窗"""
+        """View 按鈕：開啟綁定聯絡人向導"""
         self.ensure_one()
         return {
             'type': 'ir.actions.act_window',
-            'name': '選擇聯絡人',
-            'res_model': 'res.partner',
-            'view_mode': 'list,form',
+            'name': '綁定聯絡人',
+            'res_model': 'line.bind.partner.wizard',
+            'view_mode': 'form',
             'target': 'new',
+            'context': {'default_line_user_id': self.id},
         }
 
     def bind_partner(self, partner_id):
@@ -89,8 +90,24 @@ class LineUser(models.Model):
         elif self.email and not partner.email:
             partner.sudo().write({'email': self.email})
         self.write(vals)
+        # 同步到 mail.guest（如果 woow_odoo_livechat_line 已安裝）
+        self._sync_to_mail_guest(partner_id)
         _logger.info('LINE %s 綁定 partner %s', self.line_user_id, partner.name)
         return True
+
+    def _sync_to_mail_guest(self, partner_id):
+        """同步綁定到對應的 mail.guest 記錄"""
+        self.ensure_one()
+        if 'mail.guest' not in self.env:
+            return
+        if not hasattr(self.env['mail.guest'], 'line_user_id'):
+            return
+        guests = self.env['mail.guest'].sudo().search([
+            ('line_user_id', '=', self.line_user_id),
+        ])
+        for guest in guests:
+            if guest.line_partner_id.id != partner_id:
+                guest.write({'line_partner_id': partner_id})
 
     def write(self, vals):
         res = super().write(vals)
@@ -104,8 +121,44 @@ class LineUser(models.Model):
 
     def unbind(self):
         self.ensure_one()
+        self._sync_to_mail_guest(False)
         self.write({'partner_id': False, 'bound_at': False})
         return True
+
+    # ------------------------------------------------------------------
+    # 自動綁定 / 建立 Partner
+    # ------------------------------------------------------------------
+
+    @api.model
+    def _auto_bind_or_create_partner(self, line_user):
+        """自動綁定或建立聯絡人
+
+        策略：
+        1. 若 line.user 已有 partner_id → 跳過
+        2. context 有 skip_auto_bind → 跳過（wizard 手動綁定時用）
+        3. 若有 email → 搜尋同 email 的 partner，找到則綁定
+        4. 否則 → 建立新 partner，再綁定
+        """
+        if line_user.partner_id:
+            return
+        if self.env.context.get('skip_auto_bind'):
+            return
+        Partner = self.env['res.partner'].sudo()
+        partner = None
+        if line_user.email:
+            partner = Partner.search([('email', '=', line_user.email)], limit=1)
+        if not partner:
+            name = line_user.display_name or ('LINE ' + line_user.line_user_id[:8])
+            partner = Partner.create({
+                'name': name,
+                'email': line_user.email or False,
+            })
+            _logger.info('LINE: 自動建立 partner %s (id=%s) for %s',
+                         partner.name, partner.id, line_user.line_user_id)
+        else:
+            _logger.info('LINE: email 匹配綁定 partner %s (id=%s) for %s',
+                         partner.name, partner.id, line_user.line_user_id)
+        line_user.bind_partner(partner.id)
 
     # ------------------------------------------------------------------
     # 查找 / 建立
@@ -132,9 +185,13 @@ class LineUser(models.Model):
                     vals[dst] = profile_data[src]
         if existing:
             existing.sudo().write(vals)
+            if not existing.partner_id:
+                self.sudo()._auto_bind_or_create_partner(existing)
             return existing
         vals['follow_date'] = fields.Datetime.now()
-        return self.sudo().create(vals)
+        line_user = self.sudo().create(vals)
+        self.sudo()._auto_bind_or_create_partner(line_user)
+        return line_user
 
     @api.model
     def create_or_update_from_liff(self, id_token_payload):
@@ -151,6 +208,10 @@ class LineUser(models.Model):
             vals['email'] = id_token_payload['email']
         if existing:
             existing.sudo().write(vals)
+            if not existing.partner_id:
+                self.sudo()._auto_bind_or_create_partner(existing)
             return existing
         vals.update({'follow_date': fields.Datetime.now(), 'is_follower': True})
-        return self.sudo().create(vals)
+        line_user = self.sudo().create(vals)
+        self.sudo()._auto_bind_or_create_partner(line_user)
+        return line_user

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from . import models
+from . import models, wizard
 
 
 def _post_init_hook(env):
