@@ -256,13 +256,28 @@ line_user = env['line.user'].sudo().create({
 
 ```python
 svc = env['line.api.service'].sudo()
+
+# push() accepts a line.user RECORDSET (not a string UID)
 result = svc.push(line_user, [svc.build_text_message('Hello from Odoo!')])
 print('Sent to IDs:', result)
+
+# Alternative: use low-level push_message() with a string UID
+svc.push_message(line_user.line_user_id, [svc.build_text_message('Hello!')])
+
+# Broadcast to ALL followers (no user needed)
+svc.broadcast([svc.build_text_message('Announcement to everyone!')])
+
+# Multicast to a list of string UIDs
+uids = env['line.user'].sudo().search([('is_follower', '=', True)]).mapped('line_user_id')
+svc.multicast(uids, [svc.build_text_message('Batch message!')])
 ```
 
 **Step 5.** Verify the message arrived in the LINE app on the user's phone.
 If `result` is an empty list, check the Odoo log for HTTP error details and
 confirm your Channel Access Token is valid.
+
+> **Note:** `push()` accepts a `line.user` **recordset**, not a string UID.
+> For string UIDs, use `push_message()` or `multicast()` instead.
 
 ---
 
@@ -979,26 +994,6 @@ signatures or return values.
 
 ---
 
-## Quick Start: Send Your First LINE Message
-
-```python
-# In Odoo Shell (odoo-bin shell -d mydb)
-svc = env['line.api.service']
-
-# 1. Send to ALL followers
-svc.broadcast([svc.build_text_message('Hello from Odoo!')])
-
-# 2. Send to one user
-user = env['line.user'].search([('display_name', 'like', 'Peter')], limit=1)
-svc.push(user.line_user_id, [svc.build_text_message('Hi Peter!')])
-
-# 3. Batch send to multiple users
-uids = env['line.user'].search([('is_follower', '=', True)]).mapped('line_user_id')
-svc.multicast(uids, [svc.build_text_message('Announcement!')])
-```
-
----
-
 ## LINE Developer Console Setup
 
 ### Step 1: Create a Provider
@@ -1182,3 +1177,76 @@ line.user.write()                res.partner.write()
 | `get_profile` returns empty dict | Rate limited (2000/min) or invalid token | Check logs for HTTP status; re-issue token |
 | `multicast` sends to wrong users | Passing partner IDs instead of LINE UIDs | Use `mapped('line_user_id')` to get LINE UIDs |
 | `line.push.log` KeyError on create | `woow_odoo_line_liff` not installed | Install bridge module or override `_log_push` |
+| Two LINE users share same email | Auto-bind creates conflicting partner links | See "Same-Email Conflict" below |
+| System parameters missing after upgrade | `noupdate="1"` on data records | Manually create missing parameters in Settings → Technical |
+
+---
+
+## Auto-Bind Partner Flow
+
+```
+line.user created/updated (webhook or LIFF)
+    │
+    └── _auto_bind_or_create_partner()
+        │
+        ├── skip_auto_bind in context?
+        │   └── YES → stop
+        │
+        ├── partner_id already set?
+        │   └── YES → stop (already bound)
+        │
+        ├── email field present?
+        │   ├── YES → search res.partner by email
+        │   │   ├── FOUND → bind to existing partner
+        │   │   └── NOT FOUND → create new partner
+        │   │       └── name = display_name, email = email
+        │   │
+        │   └── NO email → create partner with display_name only
+        │
+        └── _sync_to_mail_guest() (if livechat module installed)
+            └── sync partner binding to mail.guest record
+```
+
+### Same-Email Conflict
+
+If two LINE users have the same email (e.g., a shared family email):
+
+- The **first** user to arrive binds to (or creates) the partner with that email.
+- The **second** user also matches the same partner via email search.
+- Both `line.user` records end up pointing to the **same** `res.partner`.
+- This is **by design** — a single contact can have multiple LINE accounts.
+- To prevent this, override `_auto_bind_or_create_partner()` to always create a new partner regardless of email match.
+
+---
+
+## Credential Storage & Security
+
+### Storage
+
+- All credentials (Channel ID, Channel Secret, Access Token) are stored as **plaintext** in `ir.config_parameter`.
+- `ir.config_parameter` records are readable by any user with **Settings / Technical** access (`base.group_system`).
+- The LINE LIFF bridge module (`woow_odoo_line_liff`) provides a Settings UI form where credentials are input via `password` widget fields (masked in the UI), but the underlying storage remains plaintext.
+
+### Token Rotation Procedure
+
+1. Go to LINE Developer Console → Messaging API → **Channel access token**
+2. Click **Issue** to generate a new long-lived token
+3. Copy the new token
+4. In Odoo: Settings → Technical → System Parameters
+5. Update `woow_line_base.messaging_access_token` with the new token
+6. **Important:** The old token remains valid until explicitly revoked in LINE Console
+7. Restart Odoo workers to clear any in-memory token cache
+
+### Audit Trail
+
+- Token access is **not** logged by default. To audit credential reads, enable Odoo's `ir.config_parameter` `read` rule logging or use database-level audit triggers.
+
+---
+
+## System Parameter `noupdate` Behavior
+
+The module's `data/ir_config_parameter.xml` uses `noupdate="1"` on parameter records. This means:
+
+- Parameters are created on **first install** with stub values.
+- On **module upgrade**, existing parameter values are **NOT overwritten** — your real credentials are preserved.
+- If a parameter record is manually deleted, it will **NOT** be recreated on upgrade. You must create it manually in Settings → Technical → System Parameters.
