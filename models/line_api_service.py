@@ -31,6 +31,15 @@ LINE_RICHMENU_URL = 'https://api.line.me/v2/bot/richmenu'
 LINE_RICHMENU_CONTENT_URL = 'https://api-data.line.me/v2/bot/richmenu'
 LINE_RICHMENU_ALIAS_URL = 'https://api.line.me/v2/bot/richmenu/alias'
 
+# Narrowcast / Insight / Quota / Audience API
+LINE_NARROWCAST_URL = 'https://api.line.me/v2/bot/message/narrowcast'
+LINE_INSIGHT_DELIVERY_URL = 'https://api.line.me/v2/bot/insight/message/delivery'
+LINE_INSIGHT_FOLLOWERS_URL = 'https://api.line.me/v2/bot/insight/followers'
+LINE_INSIGHT_MESSAGE_EVENT_URL = 'https://api.line.me/v2/bot/insight/message/event'
+LINE_QUOTA_URL = 'https://api.line.me/v2/bot/message/quota'
+LINE_QUOTA_CONSUMPTION_URL = 'https://api.line.me/v2/bot/message/quota/consumption'
+LINE_AUDIENCE_URL = 'https://api.line.me/v2/bot/audienceGroup/upload'
+
 # OAuth token 快取（per channel，in-memory）
 _token_cache = {}
 _TOKEN_REFRESH_BUFFER = 300  # 5 分鐘提前刷新
@@ -633,4 +642,205 @@ class LineApiService(models.AbstractModel):
             return resp.status_code == 200
         except http_requests.RequestException:
             _logger.exception('Rich Menu Alias 刪除失敗')
+        return False
+
+    # ------------------------------------------------------------------
+    # Narrowcast（精準推播）
+    # ------------------------------------------------------------------
+
+    def narrowcast(self, messages, recipient=None, demographic_filter=None,
+                   access_token=None, channel_id=None, channel_secret=None):
+        """精準推播（按 audience 或人口屬性篩選）
+
+        :param messages: LINE message list
+        :param recipient: dict with 'type' and 'audienceGroupId' or user IDs
+        :param demographic_filter: dict with age/gender/os/region conditions
+        :return: request_id string or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        payload = {'messages': messages}
+        if recipient:
+            payload['recipient'] = recipient
+        if demographic_filter:
+            payload['filter'] = {'demographic': demographic_filter}
+        try:
+            resp = http_requests.post(LINE_NARROWCAST_URL,
+                headers=self._auth_headers(token), json=payload, timeout=30)
+            if resp.status_code == 202:
+                return resp.json().get('requestId', 'ok')
+            _logger.warning('narrowcast 失敗: %s %s', resp.status_code, resp.text[:300])
+        except http_requests.RequestException:
+            _logger.exception('narrowcast 網路錯誤')
+        return None
+
+    # ------------------------------------------------------------------
+    # Insight 統計
+    # ------------------------------------------------------------------
+
+    def get_insight_delivery(self, date_str, access_token=None, channel_id=None, channel_secret=None):
+        """取得指定日期的訊息送達統計
+
+        :param date_str: 'yyyyMMdd' 格式日期
+        :return: dict with delivery stats or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        try:
+            resp = http_requests.get(LINE_INSIGHT_DELIVERY_URL,
+                headers=self._auth_headers(token),
+                params={'date': date_str}, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            _logger.warning('insight delivery 失敗: %s', resp.status_code)
+        except http_requests.RequestException:
+            _logger.exception('insight delivery 網路錯誤')
+        return None
+
+    def get_insight_followers(self, date_str, access_token=None, channel_id=None, channel_secret=None):
+        """取得指定日期的好友數統計
+
+        :param date_str: 'yyyyMMdd' 格式日期
+        :return: dict with follower stats or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        try:
+            resp = http_requests.get(LINE_INSIGHT_FOLLOWERS_URL,
+                headers=self._auth_headers(token),
+                params={'date': date_str}, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            _logger.warning('insight followers 失敗: %s', resp.status_code)
+        except http_requests.RequestException:
+            _logger.exception('insight followers 網路錯誤')
+        return None
+
+    def get_insight_message_event(self, request_id, access_token=None, channel_id=None, channel_secret=None):
+        """取得推播的用戶互動統計（開封/點擊）
+
+        :param request_id: 推播時取得的 request ID
+        :return: dict with event stats or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        try:
+            resp = http_requests.get(LINE_INSIGHT_MESSAGE_EVENT_URL,
+                headers=self._auth_headers(token),
+                params={'requestId': request_id}, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except http_requests.RequestException:
+            _logger.exception('insight message event 網路錯誤')
+        return None
+
+    # ------------------------------------------------------------------
+    # Quota 配額查詢
+    # ------------------------------------------------------------------
+
+    def get_quota(self, access_token=None, channel_id=None, channel_secret=None):
+        """取得月度訊息配額
+
+        :return: dict {'type': 'limited'/'none', 'value': int} or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        try:
+            resp = http_requests.get(LINE_QUOTA_URL,
+                headers=self._auth_headers(token), timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except http_requests.RequestException:
+            _logger.exception('quota 查詢錯誤')
+        return None
+
+    def get_quota_consumption(self, access_token=None, channel_id=None, channel_secret=None):
+        """取得當月已用訊息量
+
+        :return: dict {'totalUsage': int} or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        try:
+            resp = http_requests.get(LINE_QUOTA_CONSUMPTION_URL,
+                headers=self._auth_headers(token), timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except http_requests.RequestException:
+            _logger.exception('quota consumption 查詢錯誤')
+        return None
+
+    # ------------------------------------------------------------------
+    # Audience 分眾群組
+    # ------------------------------------------------------------------
+
+    def audience_create(self, description, user_ids,
+                        access_token=None, channel_id=None, channel_secret=None):
+        """建立 audience 群組（上傳 user ID 列表）
+
+        :param description: 群組描述
+        :param user_ids: LINE user ID 列表
+        :return: audience_group_id int or None
+        """
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return None
+        audiences = [{'id': uid} for uid in user_ids]
+        try:
+            resp = http_requests.post(LINE_AUDIENCE_URL,
+                headers=self._auth_headers(token),
+                json={
+                    'description': description,
+                    'isIfaAudience': False,
+                    'audiences': audiences,
+                }, timeout=30)
+            if resp.status_code == 200:
+                return resp.json().get('audienceGroupId')
+            _logger.warning('audience 建立失敗: %s %s', resp.status_code, resp.text[:300])
+        except http_requests.RequestException:
+            _logger.exception('audience 建立網路錯誤')
+        return None
+
+    def audience_add_users(self, audience_group_id, user_ids,
+                           access_token=None, channel_id=None, channel_secret=None):
+        """新增用戶到 audience 群組"""
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return False
+        audiences = [{'id': uid} for uid in user_ids]
+        try:
+            resp = http_requests.put(
+                f'{LINE_AUDIENCE_URL}/{audience_group_id}/updateDescription',
+                headers=self._auth_headers(token), timeout=10)
+            # LINE API uses PUT to add users
+            resp2 = http_requests.put(LINE_AUDIENCE_URL,
+                headers=self._auth_headers(token),
+                json={
+                    'audienceGroupId': audience_group_id,
+                    'audiences': audiences,
+                }, timeout=30)
+            return resp2.status_code == 200
+        except http_requests.RequestException:
+            _logger.exception('audience 新增用戶失敗')
+        return False
+
+    def audience_delete(self, audience_group_id,
+                        access_token=None, channel_id=None, channel_secret=None):
+        """刪除 audience 群組"""
+        token = self._resolve_token(access_token, channel_id, channel_secret)
+        if not token:
+            return False
+        try:
+            resp = http_requests.delete(
+                f'https://api.line.me/v2/bot/audienceGroup/{audience_group_id}',
+                headers=self._auth_headers(token), timeout=10)
+            return resp.status_code == 200
+        except http_requests.RequestException:
+            _logger.exception('audience 刪除失敗')
         return False
