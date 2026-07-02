@@ -800,7 +800,7 @@ class LineApiService(models.AbstractModel):
                     'isIfaAudience': False,
                     'audiences': audiences,
                 }, timeout=30)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 202):
                 return resp.json().get('audienceGroupId')
             _logger.warning('audience 建立失敗: %s %s', resp.status_code, resp.text[:300])
         except http_requests.RequestException:
