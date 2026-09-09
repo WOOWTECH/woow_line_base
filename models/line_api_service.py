@@ -84,10 +84,23 @@ class LineApiService(models.AbstractModel):
             return self._get_token_oauth(channel_id, channel_secret)
         return self._get_global_access_token() or None
 
+    def _token_cache_key(self, channel_id, channel_secret):
+        """B-8：cache key 要含 secret 的指紋，否則改掉/修正 secret 之後，
+        該 worker 仍會用舊 secret 換出的 token 繼續運作到 process 重啟或 TTL 到期。
+        用 hash 而不是存明文 secret，避免快取 key 本身洩漏憑證。"""
+        secret_fingerprint = hashlib.sha256((channel_secret or '').encode('utf-8')).hexdigest()
+        return (channel_id, secret_fingerprint)
+
+    def _invalidate_cached_token(self, channel_id, channel_secret):
+        """收到 401/403 時呼叫，強制下次 _get_token_oauth 重新換發 token"""
+        if channel_id:
+            _token_cache.pop(self._token_cache_key(channel_id, channel_secret), None)
+
     def _get_token_oauth(self, channel_id, channel_secret):
         """OAuth2 client_credentials 取得 token（帶快取）"""
         now = time.time()
-        cached = _token_cache.get(channel_id)
+        cache_key = self._token_cache_key(channel_id, channel_secret)
+        cached = _token_cache.get(cache_key)
         if cached and cached['expires_at'] > now + _TOKEN_REFRESH_BUFFER:
             return cached['token']
 
@@ -101,7 +114,7 @@ class LineApiService(models.AbstractModel):
                 data = resp.json()
                 token = data.get('access_token')
                 expires_in = data.get('expires_in', 2592000)
-                _token_cache[channel_id] = {
+                _token_cache[cache_key] = {
                     'token': token,
                     'expires_at': now + expires_in,
                 }
@@ -236,6 +249,17 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
             return {}
+        profile, status_code = self._get_profile_raw(token, line_user_id)
+        if not profile and status_code in (401, 403) and not access_token and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return {}
+            profile, _ = self._get_profile_raw(token, line_user_id)
+        return profile
+
+    def _get_profile_raw(self, token, line_user_id):
         try:
             resp = http_requests.get(
                 f'{LINE_PROFILE_URL}/{line_user_id}',
@@ -243,11 +267,12 @@ class LineApiService(models.AbstractModel):
                 timeout=5,
             )
             if resp.status_code == 200:
-                return resp.json()
+                return resp.json(), resp.status_code
             _logger.warning('Profile 取得失敗: %s', resp.status_code)
+            return {}, resp.status_code
         except http_requests.RequestException:
             _logger.exception('Profile 網路錯誤')
-        return {}
+            return {}, 0
 
     # ------------------------------------------------------------------
     # 公開：推播
@@ -298,7 +323,14 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
             return False
-        success, _, _ = self._push_message_raw(token, line_uid, messages)
+        success, status_code, _ = self._push_message_raw(token, line_uid, messages)
+        if not success and status_code in (401, 403) and not access_token and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return False
+            success, _, _ = self._push_message_raw(token, line_uid, messages)
         return success
 
     def _push_message_raw(self, token, line_uid, messages):
@@ -349,14 +381,26 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
             return False
+        success, status_code = self._reply_raw(token, reply_token, messages)
+        if not success and status_code in (401, 403) and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            # （401/403 代表這次呼叫沒被 LINE 受理，reply_token 還沒被消耗，重試安全）
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return False
+            success, _ = self._reply_raw(token, reply_token, messages)
+        return success
+
+    def _reply_raw(self, token, reply_token, messages):
         try:
             resp = http_requests.post(LINE_REPLY_URL,
                 headers=self._auth_headers(token),
                 json={'replyToken': reply_token, 'messages': messages}, timeout=10)
-            return resp.status_code == 200
+            return resp.status_code == 200, resp.status_code
         except http_requests.RequestException:
             _logger.exception('reply 網路錯誤')
-            return False
+            return False, 0
 
     # ------------------------------------------------------------------
     # 公開：媒體下載
@@ -370,6 +414,17 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
             return None, None
+        content, content_type, status_code = self._get_content_raw(token, message_id)
+        if content is None and status_code in (401, 403) and not access_token and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return None, None
+            content, content_type, _ = self._get_content_raw(token, message_id)
+        return content, content_type
+
+    def _get_content_raw(self, token, message_id):
         try:
             resp = http_requests.get(
                 f'{LINE_CONTENT_URL}/{message_id}/content',
@@ -377,11 +432,12 @@ class LineApiService(models.AbstractModel):
                 timeout=30,
             )
             if resp.status_code == 200:
-                return resp.content, resp.headers.get('Content-Type', '')
+                return resp.content, resp.headers.get('Content-Type', ''), resp.status_code
             _logger.warning('媒體下載失敗: %s', resp.status_code)
+            return None, None, resp.status_code
         except http_requests.RequestException:
             _logger.exception('媒體下載網路錯誤')
-        return None, None
+            return None, None, 0
 
     # ------------------------------------------------------------------
     # 公開：Message Builder
