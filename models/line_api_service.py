@@ -170,6 +170,22 @@ class LineApiService(models.AbstractModel):
                 _logger.warning('Access Token 驗證失敗: %s', verify_resp.status_code)
                 return None
 
+            expected_client_id = self._get_config('woow_odoo_line_liff.login_channel_id')
+            if not expected_client_id:
+                # fail closed：本站沒設定 login channel id 就不可能比對，
+                # 不能因此放行任何 LINE Login channel 簽發的 token
+                _logger.error('login_channel_id 未設定，拒絕驗證 access token（fail closed）')
+                return None
+            verify_data = verify_resp.json()
+            if verify_data.get('client_id') != expected_client_id:
+                # 沒比對 client_id = 接受任何 LINE Login channel 簽發的 token
+                # （audience confusion，攻擊者可用自己的 channel 換取本站 portal 登入）
+                _logger.warning(
+                    'Access Token client_id 不符，拒絕: got=%s expected=%s',
+                    verify_data.get('client_id'), expected_client_id,
+                )
+                return None
+
             profile_resp = http_requests.get(
                 'https://api.line.me/v2/profile',
                 headers={'Authorization': f'Bearer {access_token}'},
