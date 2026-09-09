@@ -84,10 +84,23 @@ class LineApiService(models.AbstractModel):
             return self._get_token_oauth(channel_id, channel_secret)
         return self._get_global_access_token() or None
 
+    def _token_cache_key(self, channel_id, channel_secret):
+        """B-8：cache key 要含 secret 的指紋，否則改掉/修正 secret 之後，
+        該 worker 仍會用舊 secret 換出的 token 繼續運作到 process 重啟或 TTL 到期。
+        用 hash 而不是存明文 secret，避免快取 key 本身洩漏憑證。"""
+        secret_fingerprint = hashlib.sha256((channel_secret or '').encode('utf-8')).hexdigest()
+        return (channel_id, secret_fingerprint)
+
+    def _invalidate_cached_token(self, channel_id, channel_secret):
+        """收到 401/403 時呼叫，強制下次 _get_token_oauth 重新換發 token"""
+        if channel_id:
+            _token_cache.pop(self._token_cache_key(channel_id, channel_secret), None)
+
     def _get_token_oauth(self, channel_id, channel_secret):
         """OAuth2 client_credentials 取得 token（帶快取）"""
         now = time.time()
-        cached = _token_cache.get(channel_id)
+        cache_key = self._token_cache_key(channel_id, channel_secret)
+        cached = _token_cache.get(cache_key)
         if cached and cached['expires_at'] > now + _TOKEN_REFRESH_BUFFER:
             return cached['token']
 
@@ -101,7 +114,7 @@ class LineApiService(models.AbstractModel):
                 data = resp.json()
                 token = data.get('access_token')
                 expires_in = data.get('expires_in', 2592000)
-                _token_cache[channel_id] = {
+                _token_cache[cache_key] = {
                     'token': token,
                     'expires_at': now + expires_in,
                 }
@@ -170,6 +183,22 @@ class LineApiService(models.AbstractModel):
                 _logger.warning('Access Token 驗證失敗: %s', verify_resp.status_code)
                 return None
 
+            expected_client_id = self._get_config('woow_line_base.login_channel_id')
+            if not expected_client_id:
+                # fail closed：本站沒設定 login channel id 就不可能比對，
+                # 不能因此放行任何 LINE Login channel 簽發的 token
+                _logger.error('login_channel_id 未設定，拒絕驗證 access token（fail closed）')
+                return None
+            verify_data = verify_resp.json()
+            if verify_data.get('client_id') != expected_client_id:
+                # 沒比對 client_id = 接受任何 LINE Login channel 簽發的 token
+                # （audience confusion，攻擊者可用自己的 channel 換取本站 portal 登入）
+                _logger.warning(
+                    'Access Token client_id 不符，拒絕: got=%s expected=%s',
+                    verify_data.get('client_id'), expected_client_id,
+                )
+                return None
+
             profile_resp = http_requests.get(
                 'https://api.line.me/v2/profile',
                 headers={'Authorization': f'Bearer {access_token}'},
@@ -220,6 +249,17 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
             return {}
+        profile, status_code = self._get_profile_raw(token, line_user_id)
+        if not profile and status_code in (401, 403) and not access_token and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return {}
+            profile, _ = self._get_profile_raw(token, line_user_id)
+        return profile
+
+    def _get_profile_raw(self, token, line_user_id):
         try:
             resp = http_requests.get(
                 f'{LINE_PROFILE_URL}/{line_user_id}',
@@ -227,11 +267,12 @@ class LineApiService(models.AbstractModel):
                 timeout=5,
             )
             if resp.status_code == 200:
-                return resp.json()
+                return resp.json(), resp.status_code
             _logger.warning('Profile 取得失敗: %s', resp.status_code)
+            return {}, resp.status_code
         except http_requests.RequestException:
             _logger.exception('Profile 網路錯誤')
-        return {}
+            return {}, 0
 
     # ------------------------------------------------------------------
     # 公開：推播
@@ -250,7 +291,12 @@ class LineApiService(models.AbstractModel):
             return []
 
         sent_ids = []
-        PushLog = self.env['line.push.log'].sudo()
+        # 新·4：line.push.log 定義在 woow_odoo_line_liff，不是這個 repo。
+        # 只裝 woow_line_base + woow_odoo_livechat_line（合法組合，livechat 不依賴
+        # liff）時這個 model 不存在於 registry，直接 self.env['line.push.log'] 會
+        # KeyError。正解是把 line.push.log 搬進 woow_line_base，但那需要跨 repo的
+        # migration，這裡先讓沒裝 liff 時跳過寫 log、其餘照跑。
+        PushLog = self.env['line.push.log'].sudo() if 'line.push.log' in self.env else None
 
         for lu in line_users:
             if lu.is_blocked or not lu.notification_enabled or not lu.is_follower:
@@ -259,13 +305,14 @@ class LineApiService(models.AbstractModel):
             success, status_code, resp_text = self._push_message_raw(
                 token, lu.line_user_id, messages,
             )
-            PushLog.create({
-                'line_user_id': lu.id,
-                'messages': json.dumps(messages, ensure_ascii=False),
-                'status_code': status_code,
-                'response_body': resp_text,
-                'success': success,
-            })
+            if PushLog is not None:
+                PushLog.create({
+                    'line_user_id': lu.id,
+                    'messages': json.dumps(messages, ensure_ascii=False),
+                    'status_code': status_code,
+                    'response_body': resp_text,
+                    'success': success,
+                })
             if success:
                 sent_ids.append(lu.id)
                 lu.sudo().write({'push_count': lu.push_count + 1})
@@ -282,7 +329,14 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
             return False
-        success, _, _ = self._push_message_raw(token, line_uid, messages)
+        success, status_code, _ = self._push_message_raw(token, line_uid, messages)
+        if not success and status_code in (401, 403) and not access_token and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return False
+            success, _, _ = self._push_message_raw(token, line_uid, messages)
         return success
 
     def _push_message_raw(self, token, line_uid, messages):
@@ -295,11 +349,20 @@ class LineApiService(models.AbstractModel):
             _logger.exception('推播網路錯誤: %s', line_uid)
             return False, 0, str(e)
 
-    def multicast(self, line_user_ids_list, messages, channel_id=None, channel_secret=None):
-        """群發（最多 500 人/批）"""
+    def multicast_ex(self, line_user_ids_list, messages, channel_id=None, channel_secret=None):
+        """群發（最多 500 人/批），回傳 (ok, status_code, body) 供下游判斷真實失敗原因
+
+        D-7：舊 multicast() 把逾時（RequestException）跟真的 4xx/5xx 都壓成同一個
+        False，下游沒有狀態碼可看，只能瞎猜（例如誤當 429 而降級成 narrowcast）。
+        逾時時 LINE 可能其實已受理，若下游因此重送會造成重複投遞。
+        多批次時只要有一批失敗就立刻回傳該批的狀態碼/body，後面的批次不會再送。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
+        """
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         for i in range(0, len(line_user_ids_list), 500):
             batch = line_user_ids_list[i:i + 500]
             try:
@@ -308,39 +371,67 @@ class LineApiService(models.AbstractModel):
                     json={'to': batch, 'messages': messages}, timeout=10)
                 if resp.status_code != 200:
                     _logger.warning('multicast 失敗: %s %s', resp.status_code, resp.text[:500])
-                    return False
-            except http_requests.RequestException:
+                    return False, resp.status_code, resp.text
+            except http_requests.RequestException as e:
                 _logger.exception('multicast 網路錯誤')
-                return False
-        return True
+                return False, 0, str(e)
+        return True, 200, ''
 
-    def broadcast(self, messages, channel_id=None, channel_secret=None):
-        """廣播給所有好友"""
+    def multicast(self, line_user_ids_list, messages, channel_id=None, channel_secret=None):
+        """群發（最多 500 人/批）（薄包裝，向下相容；需要狀態碼/body 請改用 multicast_ex）"""
+        return self.multicast_ex(
+            line_user_ids_list, messages, channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
+
+    def broadcast_ex(self, messages, channel_id=None, channel_secret=None):
+        """廣播給所有好友，回傳 (ok, status_code, body)
+
+        D-7：理由同 multicast_ex——狀態碼與 body 被丟掉會讓下游只能瞎猜失敗原因。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
+        """
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         try:
             resp = http_requests.post(LINE_BROADCAST_URL,
                 headers=self._auth_headers(token),
                 json={'messages': messages}, timeout=10)
-            return resp.status_code == 200
-        except http_requests.RequestException:
+            return resp.status_code == 200, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('broadcast 網路錯誤')
-            return False
+            return False, 0, str(e)
+
+    def broadcast(self, messages, channel_id=None, channel_secret=None):
+        """廣播給所有好友（薄包裝，向下相容；需要狀態碼/body 請改用 broadcast_ex）"""
+        return self.broadcast_ex(messages, channel_id=channel_id, channel_secret=channel_secret)[0]
 
     def reply(self, reply_token, messages, channel_id=None, channel_secret=None):
         """回覆（Reply Token 只能用一次）"""
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
             return False
+        success, status_code = self._reply_raw(token, reply_token, messages)
+        if not success and status_code in (401, 403) and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            # （401/403 代表這次呼叫沒被 LINE 受理，reply_token 還沒被消耗，重試安全）
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return False
+            success, _ = self._reply_raw(token, reply_token, messages)
+        return success
+
+    def _reply_raw(self, token, reply_token, messages):
         try:
             resp = http_requests.post(LINE_REPLY_URL,
                 headers=self._auth_headers(token),
                 json={'replyToken': reply_token, 'messages': messages}, timeout=10)
-            return resp.status_code == 200
+            return resp.status_code == 200, resp.status_code
         except http_requests.RequestException:
             _logger.exception('reply 網路錯誤')
-            return False
+            return False, 0
 
     # ------------------------------------------------------------------
     # 公開：媒體下載
@@ -354,6 +445,17 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
             return None, None
+        content, content_type, status_code = self._get_content_raw(token, message_id)
+        if content is None and status_code in (401, 403) and not access_token and channel_id and channel_secret:
+            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            self._invalidate_cached_token(channel_id, channel_secret)
+            token = self._resolve_token(None, channel_id, channel_secret)
+            if not token:
+                return None, None
+            content, content_type, _ = self._get_content_raw(token, message_id)
+        return content, content_type
+
+    def _get_content_raw(self, token, message_id):
         try:
             resp = http_requests.get(
                 f'{LINE_CONTENT_URL}/{message_id}/content',
@@ -361,11 +463,12 @@ class LineApiService(models.AbstractModel):
                 timeout=30,
             )
             if resp.status_code == 200:
-                return resp.content, resp.headers.get('Content-Type', '')
+                return resp.content, resp.headers.get('Content-Type', ''), resp.status_code
             _logger.warning('媒體下載失敗: %s', resp.status_code)
+            return None, None, resp.status_code
         except http_requests.RequestException:
             _logger.exception('媒體下載網路錯誤')
-        return None, None
+            return None, None, 0
 
     # ------------------------------------------------------------------
     # 公開：Message Builder
@@ -648,18 +751,20 @@ class LineApiService(models.AbstractModel):
     # Narrowcast（精準推播）
     # ------------------------------------------------------------------
 
-    def narrowcast(self, messages, recipient=None, demographic_filter=None,
-                   access_token=None, channel_id=None, channel_secret=None):
-        """精準推播（按 audience 或人口屬性篩選）
+    def narrowcast_ex(self, messages, recipient=None, demographic_filter=None,
+                       access_token=None, channel_id=None, channel_secret=None):
+        """精準推播（按 audience 或人口屬性篩選），回傳 (ok, status_code, body)
 
-        :param messages: LINE message list
-        :param recipient: dict with 'type' and 'audienceGroupId' or user IDs
-        :param demographic_filter: dict with age/gender/os/region conditions
-        :return: request_id string or None
+        D-7：理由同 broadcast_ex/multicast_ex——狀態碼與 body 被丟掉會讓下游只能
+        瞎猜失敗原因（例如逾時卻誤判成配額限制而降級成別的投遞方式）。
+        202 成功時 body 是完整 response text（含 requestId）。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
         """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return None
+            return False, 0, 'no_access_token'
         payload = {'messages': messages}
         if recipient:
             payload['recipient'] = recipient
@@ -668,12 +773,29 @@ class LineApiService(models.AbstractModel):
         try:
             resp = http_requests.post(LINE_NARROWCAST_URL,
                 headers=self._auth_headers(token), json=payload, timeout=30)
-            if resp.status_code == 202:
-                return resp.json().get('requestId', 'ok')
-            _logger.warning('narrowcast 失敗: %s %s', resp.status_code, resp.text[:300])
-        except http_requests.RequestException:
+            if resp.status_code != 202:
+                _logger.warning('narrowcast 失敗: %s %s', resp.status_code, resp.text[:300])
+            return resp.status_code == 202, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('narrowcast 網路錯誤')
-        return None
+            return False, 0, str(e)
+
+    def narrowcast(self, messages, recipient=None, demographic_filter=None,
+                   access_token=None, channel_id=None, channel_secret=None):
+        """精準推播（薄包裝，向下相容；需要狀態碼/body 請改用 narrowcast_ex）
+
+        :return: request_id string or None
+        """
+        ok, _, body = self.narrowcast_ex(
+            messages, recipient=recipient, demographic_filter=demographic_filter,
+            access_token=access_token, channel_id=channel_id, channel_secret=channel_secret,
+        )
+        if not ok:
+            return None
+        try:
+            return json.loads(body).get('requestId', 'ok')
+        except (ValueError, AttributeError):
+            return 'ok'
 
     # ------------------------------------------------------------------
     # Insight 統計

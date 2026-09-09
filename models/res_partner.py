@@ -13,7 +13,7 @@ class ResPartner(models.Model):
         # email 反向同步：partner → line.user
         if 'email' in vals:
             for partner in self:
-                for lu in partner.line_user_ids:
+                for lu in partner.sudo().line_user_ids:
                     if lu.email != partner.email:
-                        lu.with_context(skip_email_sync=True).write({'email': partner.email or False})
+                        lu.sudo().with_context(skip_email_sync=True).write({'email': partner.email or False})
         return res
