@@ -343,11 +343,20 @@ class LineApiService(models.AbstractModel):
             _logger.exception('推播網路錯誤: %s', line_uid)
             return False, 0, str(e)
 
-    def multicast(self, line_user_ids_list, messages, channel_id=None, channel_secret=None):
-        """群發（最多 500 人/批）"""
+    def multicast_ex(self, line_user_ids_list, messages, channel_id=None, channel_secret=None):
+        """群發（最多 500 人/批），回傳 (ok, status_code, body) 供下游判斷真實失敗原因
+
+        D-7：舊 multicast() 把逾時（RequestException）跟真的 4xx/5xx 都壓成同一個
+        False，下游沒有狀態碼可看，只能瞎猜（例如誤當 429 而降級成 narrowcast）。
+        逾時時 LINE 可能其實已受理，若下游因此重送會造成重複投遞。
+        多批次時只要有一批失敗就立刻回傳該批的狀態碼/body，後面的批次不會再送。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
+        """
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         for i in range(0, len(line_user_ids_list), 500):
             batch = line_user_ids_list[i:i + 500]
             try:
@@ -356,25 +365,41 @@ class LineApiService(models.AbstractModel):
                     json={'to': batch, 'messages': messages}, timeout=10)
                 if resp.status_code != 200:
                     _logger.warning('multicast 失敗: %s %s', resp.status_code, resp.text[:500])
-                    return False
-            except http_requests.RequestException:
+                    return False, resp.status_code, resp.text
+            except http_requests.RequestException as e:
                 _logger.exception('multicast 網路錯誤')
-                return False
-        return True
+                return False, 0, str(e)
+        return True, 200, ''
 
-    def broadcast(self, messages, channel_id=None, channel_secret=None):
-        """廣播給所有好友"""
+    def multicast(self, line_user_ids_list, messages, channel_id=None, channel_secret=None):
+        """群發（最多 500 人/批）（薄包裝，向下相容；需要狀態碼/body 請改用 multicast_ex）"""
+        return self.multicast_ex(
+            line_user_ids_list, messages, channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
+
+    def broadcast_ex(self, messages, channel_id=None, channel_secret=None):
+        """廣播給所有好友，回傳 (ok, status_code, body)
+
+        D-7：理由同 multicast_ex——狀態碼與 body 被丟掉會讓下游只能瞎猜失敗原因。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
+        """
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         try:
             resp = http_requests.post(LINE_BROADCAST_URL,
                 headers=self._auth_headers(token),
                 json={'messages': messages}, timeout=10)
-            return resp.status_code == 200
-        except http_requests.RequestException:
+            return resp.status_code == 200, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('broadcast 網路錯誤')
-            return False
+            return False, 0, str(e)
+
+    def broadcast(self, messages, channel_id=None, channel_secret=None):
+        """廣播給所有好友（薄包裝，向下相容；需要狀態碼/body 請改用 broadcast_ex）"""
+        return self.broadcast_ex(messages, channel_id=channel_id, channel_secret=channel_secret)[0]
 
     def reply(self, reply_token, messages, channel_id=None, channel_secret=None):
         """回覆（Reply Token 只能用一次）"""
@@ -720,18 +745,20 @@ class LineApiService(models.AbstractModel):
     # Narrowcast（精準推播）
     # ------------------------------------------------------------------
 
-    def narrowcast(self, messages, recipient=None, demographic_filter=None,
-                   access_token=None, channel_id=None, channel_secret=None):
-        """精準推播（按 audience 或人口屬性篩選）
+    def narrowcast_ex(self, messages, recipient=None, demographic_filter=None,
+                       access_token=None, channel_id=None, channel_secret=None):
+        """精準推播（按 audience 或人口屬性篩選），回傳 (ok, status_code, body)
 
-        :param messages: LINE message list
-        :param recipient: dict with 'type' and 'audienceGroupId' or user IDs
-        :param demographic_filter: dict with age/gender/os/region conditions
-        :return: request_id string or None
+        D-7：理由同 broadcast_ex/multicast_ex——狀態碼與 body 被丟掉會讓下游只能
+        瞎猜失敗原因（例如逾時卻誤判成配額限制而降級成別的投遞方式）。
+        202 成功時 body 是完整 response text（含 requestId）。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
         """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return None
+            return False, 0, 'no_access_token'
         payload = {'messages': messages}
         if recipient:
             payload['recipient'] = recipient
@@ -740,12 +767,29 @@ class LineApiService(models.AbstractModel):
         try:
             resp = http_requests.post(LINE_NARROWCAST_URL,
                 headers=self._auth_headers(token), json=payload, timeout=30)
-            if resp.status_code == 202:
-                return resp.json().get('requestId', 'ok')
-            _logger.warning('narrowcast 失敗: %s %s', resp.status_code, resp.text[:300])
-        except http_requests.RequestException:
+            if resp.status_code != 202:
+                _logger.warning('narrowcast 失敗: %s %s', resp.status_code, resp.text[:300])
+            return resp.status_code == 202, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('narrowcast 網路錯誤')
-        return None
+            return False, 0, str(e)
+
+    def narrowcast(self, messages, recipient=None, demographic_filter=None,
+                   access_token=None, channel_id=None, channel_secret=None):
+        """精準推播（薄包裝，向下相容；需要狀態碼/body 請改用 narrowcast_ex）
+
+        :return: request_id string or None
+        """
+        ok, _, body = self.narrowcast_ex(
+            messages, recipient=recipient, demographic_filter=demographic_filter,
+            access_token=access_token, channel_id=channel_id, channel_secret=channel_secret,
+        )
+        if not ok:
+            return None
+        try:
+            return json.loads(body).get('requestId', 'ok')
+        except (ValueError, AttributeError):
+            return 'ok'
 
     # ------------------------------------------------------------------
     # Insight 統計
