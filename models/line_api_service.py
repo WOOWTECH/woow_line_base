@@ -291,7 +291,12 @@ class LineApiService(models.AbstractModel):
             return []
 
         sent_ids = []
-        PushLog = self.env['line.push.log'].sudo()
+        # 新·4：line.push.log 定義在 woow_odoo_line_liff，不是這個 repo。
+        # 只裝 woow_line_base + woow_odoo_livechat_line（合法組合，livechat 不依賴
+        # liff）時這個 model 不存在於 registry，直接 self.env['line.push.log'] 會
+        # KeyError。正解是把 line.push.log 搬進 woow_line_base，但那需要跨 repo的
+        # migration，這裡先讓沒裝 liff 時跳過寫 log、其餘照跑。
+        PushLog = self.env['line.push.log'].sudo() if 'line.push.log' in self.env else None
 
         for lu in line_users:
             if lu.is_blocked or not lu.notification_enabled or not lu.is_follower:
@@ -300,13 +305,14 @@ class LineApiService(models.AbstractModel):
             success, status_code, resp_text = self._push_message_raw(
                 token, lu.line_user_id, messages,
             )
-            PushLog.create({
-                'line_user_id': lu.id,
-                'messages': json.dumps(messages, ensure_ascii=False),
-                'status_code': status_code,
-                'response_body': resp_text,
-                'success': success,
-            })
+            if PushLog is not None:
+                PushLog.create({
+                    'line_user_id': lu.id,
+                    'messages': json.dumps(messages, ensure_ascii=False),
+                    'status_code': status_code,
+                    'response_body': resp_text,
+                    'success': success,
+                })
             if success:
                 sent_ids.append(lu.id)
                 lu.sudo().write({'push_count': lu.push_count + 1})
