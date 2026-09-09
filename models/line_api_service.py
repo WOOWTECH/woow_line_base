@@ -183,7 +183,7 @@ class LineApiService(models.AbstractModel):
                 _logger.warning('Access Token 驗證失敗: %s', verify_resp.status_code)
                 return None
 
-            expected_client_id = self._get_config('woow_odoo_line_liff.login_channel_id')
+            expected_client_id = self._get_config('woow_line_base.login_channel_id')
             if not expected_client_id:
                 # fail closed：本站沒設定 login channel id 就不可能比對，
                 # 不能因此放行任何 LINE Login channel 簽發的 token
