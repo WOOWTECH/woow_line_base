@@ -6,7 +6,7 @@ from unittest.mock import patch
 from odoo.tests import TransactionCase, tagged
 
 
-@tagged('post_install', '-at_install')
+@tagged('post_install', '-at_install', 'line_ci')
 class TestAccessTokenVerification(TransactionCase):
     """The LINE verify endpoint returns 200 for a token issued by ANY Login
     channel. Without comparing client_id, someone else's channel could mint a
@@ -50,7 +50,7 @@ class TestAccessTokenVerification(TransactionCase):
         self.assertNotIn('woow_odoo_line_liff.login_channel_id', src)
 
 
-@tagged('post_install', '-at_install')
+@tagged('post_install', '-at_install', 'line_ci')
 class TestPartnerLineUserAccess(TransactionCase):
     """B-7: res.partner.write() read a one2many on line.user without sudo.
     Odoo 18 checks read access before optimising the domain, so any employee
@@ -89,7 +89,7 @@ class TestPartnerLineUserAccess(TransactionCase):
         self.assertFalse(acl.perm_unlink)
 
 
-@tagged('post_install', '-at_install')
+@tagged('post_install', '-at_install', 'line_ci')
 class TestPushResilience(TransactionCase):
     """新-4: push() logs to line.push.log, a model that lives in the LIFF
     module — but this module only depends on base. Installing base+livechat
