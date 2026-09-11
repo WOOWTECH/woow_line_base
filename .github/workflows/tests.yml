@@ -42,7 +42,7 @@ jobs:
     env:
       # Bump when adding a test class, so an import that silently stops
       # collecting is caught instead of passing as a green build.
-      MIN_TESTS: "16"
+      MIN_TESTS: "20"
       MODULES: "woow_line_base"
       TESTED: "line_ci/woow_line_base"
 
