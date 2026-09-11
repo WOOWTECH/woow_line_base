@@ -640,18 +640,22 @@ class LineApiService(models.AbstractModel):
             menu_data, access_token=access_token, channel_id=channel_id, channel_secret=channel_secret,
         )[0]
 
-    def richmenu_upload_image(self, richmenu_id, image_data, content_type='image/png',
-                              access_token=None, channel_id=None, channel_secret=None):
-        """上傳 Rich Menu 圖片
+    def richmenu_upload_image_ex(self, richmenu_id, image_data, content_type='image/png',
+                                 access_token=None, channel_id=None, channel_secret=None):
+        """上傳 Rich Menu 圖片，回傳 (ok, status_code, body)
+
+        LINE 拒收圖片時會說明原因（尺寸不符、檔案太大…）；只回 True/False 的話
+        操作者只能看到一句通用錯誤，得自己猜是哪裡不對。
 
         :param richmenu_id: LINE Rich Menu ID
         :param image_data: 圖片 bytes
         :param content_type: image/png 或 image/jpeg
-        :return: True/False
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
         """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         try:
             resp = http_requests.post(
                 f'{LINE_RICHMENU_CONTENT_URL}/{richmenu_id}/content',
@@ -661,10 +665,21 @@ class LineApiService(models.AbstractModel):
                 },
                 data=image_data, timeout=30,
             )
-            return resp.status_code == 200
-        except http_requests.RequestException:
+            return resp.status_code == 200, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('Rich Menu 圖片上傳網路錯誤')
-        return False
+            return False, 0, str(e)
+
+    def richmenu_upload_image(self, richmenu_id, image_data, content_type='image/png',
+                              access_token=None, channel_id=None, channel_secret=None):
+        """上傳 Rich Menu 圖片（薄包裝，向下相容；需要狀態碼/body 請改用 richmenu_upload_image_ex）
+
+        :return: True/False
+        """
+        return self.richmenu_upload_image_ex(
+            richmenu_id, image_data, content_type=content_type, access_token=access_token,
+            channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
 
     def richmenu_set_default(self, richmenu_id, access_token=None, channel_id=None, channel_secret=None):
         """設定預設 Rich Menu"""
@@ -1037,17 +1052,33 @@ class LineApiService(models.AbstractModel):
             _logger.exception('audience 新增用戶失敗')
         return False
 
-    def audience_delete(self, audience_group_id,
-                        access_token=None, channel_id=None, channel_secret=None):
-        """刪除 audience 群組"""
+    def audience_delete_ex(self, audience_group_id,
+                           access_token=None, channel_id=None, channel_secret=None):
+        """刪除 audience 群組，回傳 (ok, status_code, body)
+
+        呼叫端要分得出「刪除成功」、「LINE 上本來就不存在（404）」與「真的失敗」：
+        只回 True/False 的話，失敗時呼叫端會照樣清掉 Odoo 裡的 group id，
+        LINE 上就留下一個 Odoo 管不到的 audience（跟 richmenu_delete_ex 同一個理由）。
+
+        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
+                 body 是例外訊息字串。
+        """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         try:
             resp = http_requests.delete(
                 f'https://api.line.me/v2/bot/audienceGroup/{audience_group_id}',
                 headers=self._auth_headers(token), timeout=10)
-            return resp.status_code == 200
-        except http_requests.RequestException:
+            return resp.status_code == 200, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('audience 刪除失敗')
-        return False
+            return False, 0, str(e)
+
+    def audience_delete(self, audience_group_id,
+                        access_token=None, channel_id=None, channel_secret=None):
+        """刪除 audience 群組（薄包裝，向下相容；需要狀態碼/body 請改用 audience_delete_ex）"""
+        return self.audience_delete_ex(
+            audience_group_id, access_token=access_token,
+            channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
