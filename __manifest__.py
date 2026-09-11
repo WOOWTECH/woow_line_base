@@ -2,7 +2,7 @@
 # woow_line_base/__manifest__.py
 {
     'name': 'WOOW LINE Base',
-    'version': '18.0.3.2.1',
+    'version': '18.0.3.2.2',
     'category': 'Marketing',
     'summary': 'LINE 基礎層：統一 API 客戶端、用戶身份',
     'description': """

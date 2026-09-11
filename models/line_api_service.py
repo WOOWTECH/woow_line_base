@@ -44,6 +44,10 @@ LINE_AUDIENCE_URL = 'https://api.line.me/v2/bot/audienceGroup/upload'
 _token_cache = {}
 _TOKEN_REFRESH_BUFFER = 300  # 5 分鐘提前刷新
 
+# H-12：媒體下載大小上限，預設值；可用 ir.config_parameter 覆寫
+_CONTENT_MAX_MB_DEFAULT = 50
+_CONTENT_CHUNK_SIZE = 1024 * 1024  # 1 MB
+
 
 class LineApiService(models.AbstractModel):
     """統一 LINE API 客戶端
@@ -455,20 +459,71 @@ class LineApiService(models.AbstractModel):
             content, content_type, _ = self._get_content_raw(token, message_id)
         return content, content_type
 
+    def _get_content_max_bytes(self):
+        """H-12：上限來自 ir.config_parameter，預設 50 MB"""
+        raw = self.env['ir.config_parameter'].sudo().get_param(
+            'woow_line_base.content_max_mb', _CONTENT_MAX_MB_DEFAULT)
+        try:
+            mb = float(raw)
+        except (TypeError, ValueError):
+            mb = _CONTENT_MAX_MB_DEFAULT
+        return int(mb * 1024 * 1024)
+
     def _get_content_raw(self, token, message_id):
+        """H-12：串流下載，邊讀邊檢查大小，絕不把整包吃進記憶體。
+
+        Content-Length 是客戶端宣稱的，不可信；串流本身也要邊讀邊算，
+        兩邊任一超過上限就中止並關閉連線。
+        """
+        cap_bytes = self._get_content_max_bytes()
         try:
             resp = http_requests.get(
                 f'{LINE_CONTENT_URL}/{message_id}/content',
                 headers={'Authorization': f'Bearer {token}'},
                 timeout=30,
+                stream=True,
             )
-            if resp.status_code == 200:
-                return resp.content, resp.headers.get('Content-Type', ''), resp.status_code
-            _logger.warning('媒體下載失敗: %s', resp.status_code)
-            return None, None, resp.status_code
         except http_requests.RequestException:
             _logger.exception('媒體下載網路錯誤')
             return None, None, 0
+
+        if resp.status_code != 200:
+            _logger.warning('媒體下載失敗: %s', resp.status_code)
+            status_code = resp.status_code
+            resp.close()
+            return None, None, status_code
+
+        declared_length = resp.headers.get('Content-Length')
+        if declared_length is not None:
+            try:
+                declared_over_cap = int(declared_length) > cap_bytes
+            except ValueError:
+                declared_over_cap = False
+            if declared_over_cap:
+                _logger.warning(
+                    '媒體下載拒絕：宣告大小超過上限 (message_id=%s, declared_bytes=%s)',
+                    message_id, declared_length)
+                resp.close()
+                return None, None, resp.status_code
+
+        content_type = resp.headers.get('Content-Type', '')
+        chunks = []
+        total = 0
+        try:
+            for chunk in resp.iter_content(chunk_size=_CONTENT_CHUNK_SIZE):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > cap_bytes:
+                    _logger.warning(
+                        '媒體下載拒絕：串流大小超過上限 (message_id=%s, pulled_bytes=%s)',
+                        message_id, total)
+                    return None, None, resp.status_code
+                chunks.append(chunk)
+        finally:
+            resp.close()
+
+        return b''.join(chunks), content_type, resp.status_code
 
     # ------------------------------------------------------------------
     # 公開：Message Builder
@@ -550,24 +605,40 @@ class LineApiService(models.AbstractModel):
     # 公開：Rich Menu API
     # ------------------------------------------------------------------
 
-    def richmenu_create(self, menu_data, access_token=None, channel_id=None, channel_secret=None):
-        """建立 Rich Menu
+    def richmenu_create_ex(self, menu_data, access_token=None, channel_id=None, channel_secret=None):
+        """建立 Rich Menu，回傳 (ok_id, status_code, body)
+
+        H-7：呼叫端要在建立失敗時把 LINE 的實際錯誤訊息顯示給使用者，薄包裝
+        （richmenu_create）只回 id/None 會把 body 丟掉，跟 broadcast_ex 等的
+        理由一樣。
 
         :param menu_data: dict（size, selected, name, chatBarText, areas）
-        :return: richMenuId 字串或 None
+        :return: (richMenuId 字串或 None, int status_code, str body)。網路例外
+                 時 status_code=0，body 是例外訊息字串。
         """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return None
+            return None, 0, 'no_access_token'
         try:
             resp = http_requests.post(LINE_RICHMENU_URL,
                 headers=self._auth_headers(token), json=menu_data, timeout=10)
             if resp.status_code == 200:
-                return resp.json().get('richMenuId')
+                return resp.json().get('richMenuId'), resp.status_code, resp.text
             _logger.warning('Rich Menu 建立失敗: %s %s', resp.status_code, resp.text)
-        except http_requests.RequestException:
+            return None, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('Rich Menu 建立網路錯誤')
-        return None
+            return None, 0, str(e)
+
+    def richmenu_create(self, menu_data, access_token=None, channel_id=None, channel_secret=None):
+        """建立 Rich Menu（薄包裝，向下相容；需要狀態碼/body 請改用 richmenu_create_ex）
+
+        :param menu_data: dict（size, selected, name, chatBarText, areas）
+        :return: richMenuId 字串或 None
+        """
+        return self.richmenu_create_ex(
+            menu_data, access_token=access_token, channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
 
     def richmenu_upload_image(self, richmenu_id, image_data, content_type='image/png',
                               access_token=None, channel_id=None, channel_secret=None):
@@ -670,19 +741,33 @@ class LineApiService(models.AbstractModel):
             _logger.exception('Rich Menu 批次綁定失敗')
         return False
 
-    def richmenu_delete(self, richmenu_id, access_token=None, channel_id=None, channel_secret=None):
-        """刪除 Rich Menu"""
+    def richmenu_delete_ex(self, richmenu_id, access_token=None, channel_id=None, channel_secret=None):
+        """刪除 Rich Menu，回傳 (ok, status_code, body)
+
+        H-8：呼叫端要能區分「刪除成功／已經不存在(404)」跟「真的失敗
+        (5xx/401...)」，薄包裝（richmenu_delete）只回 True/False 會讓 404 跟
+        500 變成同一個 False，呼叫端沒辦法決定要不要把記錄留住。
+
+        :return: (bool ok, int status_code, str body)。網路例外時
+                 status_code=0，body 是例外訊息字串。
+        """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return False
+            return False, 0, 'no_access_token'
         try:
             resp = http_requests.delete(
                 f'{LINE_RICHMENU_URL}/{richmenu_id}',
                 headers=self._auth_headers(token), timeout=10)
-            return resp.status_code == 200
-        except http_requests.RequestException:
+            return resp.status_code == 200, resp.status_code, resp.text
+        except http_requests.RequestException as e:
             _logger.exception('Rich Menu 刪除失敗')
-        return False
+            return False, 0, str(e)
+
+    def richmenu_delete(self, richmenu_id, access_token=None, channel_id=None, channel_secret=None):
+        """刪除 Rich Menu（薄包裝，向下相容；需要狀態碼/body 請改用 richmenu_delete_ex）"""
+        return self.richmenu_delete_ex(
+            richmenu_id, access_token=access_token, channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
 
     def richmenu_get_user_menu(self, line_user_id,
                                 access_token=None, channel_id=None, channel_secret=None):
