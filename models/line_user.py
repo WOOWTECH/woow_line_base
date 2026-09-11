@@ -149,16 +149,59 @@ class LineUser(models.Model):
             partner = Partner.search([('email', '=', line_user.email)], limit=1)
         if not partner:
             name = line_user.display_name or ('LINE ' + line_user.line_user_id[:8])
-            partner = Partner.create({
+            vals = {
                 'name': name,
                 'email': line_user.email or False,
-            })
+            }
+            # 不指定語言的話，聯絡人會拿到建立當下環境的語言（webhook 下多半是 en_US），
+            # 之後 Odoo 寄給這位客人的範本信件（行事曆邀請、報價單…）全部變英文（H-17）。
+            lang = self._active_lang(line_user.preferred_lang)
+            if lang:
+                vals['lang'] = lang
+            partner = Partner.create(vals)
             _logger.info('LINE: 自動建立 partner %s (id=%s) for %s',
                          partner.name, partner.id, line_user.line_user_id)
         else:
             _logger.info('LINE: email 匹配綁定 partner %s (id=%s) for %s',
                          partner.name, partner.id, line_user.line_user_id)
         line_user.bind_partner(partner.id)
+
+    @api.model
+    def _active_lang(self, code):
+        """code 若是這個資料庫已啟用的語言就回傳它，否則 False
+        （res.partner.lang 只接受已啟用的語言）。"""
+        return code if code and self.env['res.lang']._lang_get(code) else False
+
+    @api.model
+    def action_fix_partner_languages(self):
+        """把綁定 LINE、卻被設成 en_US 的聯絡人改回 LINE 偏好語言。
+
+        在 18.0.3.2.5 之前，從 LINE 自動建立的聯絡人都拿到建立當下環境的語言，
+        英文有啟用的資料庫（markstudio）因此全部是 en_US。只改：
+          * 綁定 LINE 用戶、目前是 en_US 的聯絡人；
+          * 該 LINE 用戶的偏好語言不是 en_US，而且在這個資料庫已啟用；
+          * 不屬於任何內部使用者——那會連帶改掉員工自己的後台介面語言。
+        可以重複執行。18.0.3.2.5 的 migration 會呼叫一次。
+
+        :return: 改了幾位聯絡人
+        """
+        fixed = 0
+        line_users = self.sudo().search([
+            ('partner_id', '!=', False),
+            ('partner_id.lang', '=', 'en_US'),
+        ])
+        for line_user in line_users:
+            partner = line_user.partner_id
+            lang = self._active_lang(line_user.preferred_lang)
+            if not lang or lang == 'en_US' or partner.lang != 'en_US':
+                continue
+            if partner.with_context(active_test=False).user_ids.filtered(lambda u: not u.share):
+                continue
+            partner.write({'lang': lang})
+            fixed += 1
+        if fixed:
+            _logger.info('LINE: %d 位 LINE 聯絡人的語言由 en_US 改回 LINE 偏好語言', fixed)
+        return fixed
 
     # ------------------------------------------------------------------
     # 查找 / 建立
