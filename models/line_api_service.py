@@ -1060,8 +1060,12 @@ class LineApiService(models.AbstractModel):
         只回 True/False 的話，失敗時呼叫端會照樣清掉 Odoo 裡的 group id，
         LINE 上就留下一個 Odoo 管不到的 audience（跟 richmenu_delete_ex 同一個理由）。
 
-        :return: (bool ok, int status_code, str body)。網路例外時 status_code=0，
-                 body 是例外訊息字串。
+        LINE 對這個 API 的實際回應（2026-09-12 komibright 實測）：存在的 audience
+        回 **202**（已受理），不是 200；已不存在的回 400
+        {"message": "audience group not found"}，不是 404。
+
+        :return: (bool ok, int status_code, str body)。ok 表示 LINE 已受理刪除
+                 （200/202）。網路例外時 status_code=0，body 是例外訊息字串。
         """
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
@@ -1070,7 +1074,7 @@ class LineApiService(models.AbstractModel):
             resp = http_requests.delete(
                 f'https://api.line.me/v2/bot/audienceGroup/{audience_group_id}',
                 headers=self._auth_headers(token), timeout=10)
-            return resp.status_code == 200, resp.status_code, resp.text
+            return resp.status_code in (200, 202), resp.status_code, resp.text
         except http_requests.RequestException as e:
             _logger.exception('audience 刪除失敗')
             return False, 0, str(e)
