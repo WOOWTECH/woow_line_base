@@ -464,7 +464,8 @@ endpoints (see "Extending with New API Methods").
 | Method | Signature | Returns | Description |
 |--------|-----------|---------|-------------|
 | `push` | `(line_users, messages, ...)` | `list[int]` | Push messages to a `line.user` recordset. Filters out blocked/unfollowed/notification-disabled users. Writes to `line.push.log`. Returns list of successful `line.user` IDs. |
-| `push_message` | `(line_uid, messages, ...)` | `bool` | Low-level push to a LINE User ID string. No logging, no filtering. |
+| `push_message` | `(line_uid, messages, ...)` | `bool` | Low-level push to a LINE User ID string. No filtering. Writes one `line.push.log` row when `woow_odoo_line_liff` is installed. |
+| `push_message_ex` | `(line_uid, messages, ...)` | `(bool, int, str)` | Same as `push_message`, but returns `(success, status_code, response_body)`. `status_code` 0 means no response (timeout / network error): LINE may still have accepted it, so do not resend blindly. |
 | `reply` | `(reply_token, messages, ...)` | `bool` | One-time reply using a webhook reply token. |
 | `multicast` | `(line_user_ids_list, messages, ...)` | `bool` | Batch push to a list of LINE User ID strings. Automatically chunks into batches of 500. |
 | `broadcast` | `(messages, ...)` | `bool` | Broadcast to all followers of the LINE Official Account. |
@@ -697,6 +698,9 @@ The `push()` method:
 - Accepts a `line.user` **recordset** (can contain multiple users)
 - Automatically skips blocked, unfollowed, and notification-disabled users
 - Writes to `line.push.log` (if the model exists -- provided by upstream modules)
+  - one row per logical push; only the message count and types are stored, never the text
+  - `result_state`: `accepted` / `failed` (LINE answered with an error) / `unknown` (no answer) / `not_attempted` (no access token)
+  - a failure to write the log never blocks or rolls back the send
 - Increments `push_count` on each successfully pushed user
 - Returns a list of `line.user` IDs that were successfully sent
 
@@ -945,9 +949,10 @@ unexpected side effects in automated scripts:
 The high-level `push()` method references `self.env['line.push.log']`. This
 model is **not** defined in `woow_line_base` itself -- it is provided by the
 upstream `woow_odoo_line_liff` (LINE Bridge) module. If you call `push()` without
-the bridge module installed, it will raise a `KeyError`. In that case, use the
-low-level `push_message()` method instead, or define your own `line.push.log`
-model.
+the bridge module installed, the log is skipped and the push still runs.
+Write the log row from the same version of both modules: `woow_line_base`
+18.0.3.3.0 fills `operation_source` / `result_state`, which only exist in
+`woow_odoo_line_liff` 18.0.3.3.0 and later.
 
 ### Cross-Module Dependency Table
 
