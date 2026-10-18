@@ -60,6 +60,10 @@ class LineApiService(models.AbstractModel):
     _name = 'line.api.service'
     _description = '統一 LINE API 客戶端'
 
+    # 同一個公開 Channel ID 的歷史設定應極少；超過此界線不做憑證比對，
+    # 避免稽核功能把異常資料集變成大量 secret/token 的記憶體處理。
+    _PUSH_LOG_CONFIG_CANDIDATE_LIMIT = 10
+
     # ------------------------------------------------------------------
     # 私有：Credential 取得
     # ------------------------------------------------------------------
@@ -282,6 +286,135 @@ class LineApiService(models.AbstractModel):
     # 公開：推播
     # ------------------------------------------------------------------
 
+    def _push_log_model(self):
+        """回傳可選的 LIFF log model；base 模組絕不依賴它。"""
+        return self.env['line.push.log'].sudo() if 'line.push.log' in self.env else None
+
+    def _resolve_push_log_config(self, channel_id=None, channel_secret=None,
+                                 access_token=None):
+        """以 Channel ID 查找有限候選，再在記憶體比對憑證。
+
+        ORM domain 絕不含 secret/token，避免它們出現在 SQL 或 debug 日誌。明確
+        傳入的 access token 不可用來歸屬 config；per-channel 模式需要 Channel
+        ID + secret。全域模式則要求目前 Channel ID 及至少一個全域憑證。來源
+        缺失、候選過多或唯一性不足時一律回傳 False，不依 active/排序猜測。
+        """
+        if 'line.liff.config' not in self.env:
+            return False
+        # _resolve_token gives an explicitly supplied token priority over the
+        # Channel ID/secret.  Do not attribute that token to supplied metadata.
+        if access_token:
+            return False
+
+        expected_token = False
+        if channel_id:
+            # access_token 可能由任意呼叫端傳入，不能據此認定它屬於這個 channel。
+            if not channel_secret:
+                return False
+            expected_channel_id = channel_id
+            expected_secret = channel_secret
+        else:
+            # 有顯式 credential 卻無 Channel ID，沒有安全的歸屬證據。
+            if access_token or channel_secret:
+                return False
+            expected_channel_id = self._get_config('woow_line_base.messaging_channel_id')
+            expected_secret = self._get_global_channel_secret()
+            expected_token = self._get_global_access_token()
+            if not expected_channel_id or not (expected_secret or expected_token):
+                return False
+
+        Config = self.env['line.liff.config'].sudo()
+        candidates = Config.search(
+            [('messaging_channel_id', '=', expected_channel_id)],
+            limit=self._PUSH_LOG_CONFIG_CANDIDATE_LIMIT + 1,
+        )
+        if not candidates or len(candidates) > self._PUSH_LOG_CONFIG_CANDIDATE_LIMIT:
+            return False
+        matches = candidates.filtered(
+            lambda config: (
+                hmac.compare_digest(str(config.messaging_channel_secret or '').encode('utf-8'),
+                                    str(expected_secret or '').encode('utf-8'))
+                if expected_secret else True
+            ) and (
+                hmac.compare_digest(str(config.messaging_access_token or '').encode('utf-8'),
+                                    str(expected_token or '').encode('utf-8'))
+                if expected_token else True
+            )
+        )
+        return matches.id if len(matches) == 1 else False
+
+    @staticmethod
+    def _push_log_messages(messages):
+        """只記錄訊息數量與類型，且不可信輸入不能阻斷發送結果紀錄。"""
+        if not isinstance(messages, list):
+            return json.dumps({'count': 0, 'types': []}, ensure_ascii=False)
+        message_types = [message.get('type', 'unknown') for message in messages
+                         if isinstance(message, dict)]
+        return json.dumps({
+            'count': len(messages),
+            'types': message_types,
+        }, ensure_ascii=False)
+
+    def _get_unique_line_user(self, line_uid):
+        """只在 LINE UID 唯一對應時回傳用戶，避免猜測或重複計數。"""
+        if not line_uid:
+            return False
+        line_users = self.env['line.user'].sudo().search(
+            [('line_user_id', '=', line_uid)], limit=2)
+        return line_users[0] if len(line_users) == 1 else False
+
+    @staticmethod
+    def _push_result_state(success, status_code, attempted=True):
+        if not attempted:
+            return 'not_attempted'
+        if success:
+            return 'accepted'
+        # RequestException/timeout 沒有 LINE 的最終回應；不能宣稱未送達。
+        return 'unknown' if not status_code else 'failed'
+
+    def _record_push_result(self, line_uid, messages, success, status_code,
+                            response_body, operation_source, channel_id=None,
+                            channel_secret=None, access_token=None, attempted=True,
+                            line_user_id=False, redact_token=None):
+        """Best-effort 記錄一次 logical push，絕不讓日誌失敗阻斷既有發送。"""
+        PushLog = self._push_log_model()
+        if PushLog is None:
+            return
+        try:
+            # ORM/SQL 失敗會讓 PostgreSQL transaction aborted；必須以 savepoint
+            # 隔離這個可選的稽核寫入，外層業務交易及已送出的結果才可繼續。
+            with self.env.cr.savepoint():
+                if not line_user_id:
+                    line_user = self._get_unique_line_user(line_uid)
+                    line_user_id = line_user.id if line_user else False
+                # response 不是請求 payload；仍限制大小並遮蔽本次使用的 token。
+                safe_response = str(response_body or '')
+                if redact_token:
+                    safe_response = safe_response.replace(redact_token, '[redacted]')
+                PushLog.create({
+                    'config_id': self._resolve_push_log_config(
+                        channel_id=channel_id, channel_secret=channel_secret,
+                        access_token=access_token),
+                    'line_user_id': line_user_id or False,
+                    'messages': self._push_log_messages(messages),
+                    'status_code': status_code or 0,
+                    'response_body': safe_response[:1000],
+                    'success': success,
+                    'operation_source': operation_source,
+                    'result_state': self._push_result_state(
+                        success, status_code, attempted=attempted),
+                })
+        except Exception:
+            _logger.exception('LINE push 日誌寫入失敗（發送結果不受影響）')
+
+    def _increment_low_level_push_count(self, line_uid):
+        """LIFF logging installed 時，成功的低階 logical push 才計一次。"""
+        if self._push_log_model() is None:
+            return
+        line_user = self._get_unique_line_user(line_uid)
+        if line_user:
+            line_user.sudo().write({'push_count': line_user.push_count + 1})
+
     def push(self, line_users, messages, channel_id=None, channel_secret=None):
         """推播訊息給 line.user recordset（過濾 blocked/disabled/unfollowed）
 
@@ -292,16 +425,16 @@ class LineApiService(models.AbstractModel):
         token = self._resolve_token(None, channel_id, channel_secret)
         if not token:
             _logger.error('無法取得 Access Token，推播中止')
+            for lu in line_users:
+                if not (lu.is_blocked or not lu.notification_enabled or not lu.is_follower):
+                    self._record_push_result(
+                        lu.line_user_id, messages, False, 0, 'no_access_token',
+                        'push', channel_id=channel_id,
+                        channel_secret=channel_secret, attempted=False,
+                        line_user_id=lu.id, redact_token=token)
             return []
 
         sent_ids = []
-        # 新·4：line.push.log 定義在 woow_odoo_line_liff，不是這個 repo。
-        # 只裝 woow_line_base + woow_odoo_livechat_line（合法組合，livechat 不依賴
-        # liff）時這個 model 不存在於 registry，直接 self.env['line.push.log'] 會
-        # KeyError。正解是把 line.push.log 搬進 woow_line_base，但那需要跨 repo的
-        # migration，這裡先讓沒裝 liff 時跳過寫 log、其餘照跑。
-        PushLog = self.env['line.push.log'].sudo() if 'line.push.log' in self.env else None
-
         for lu in line_users:
             if lu.is_blocked or not lu.notification_enabled or not lu.is_follower:
                 continue
@@ -309,39 +442,51 @@ class LineApiService(models.AbstractModel):
             success, status_code, resp_text = self._push_message_raw(
                 token, lu.line_user_id, messages,
             )
-            if PushLog is not None:
-                PushLog.create({
-                    'line_user_id': lu.id,
-                    'messages': json.dumps(messages, ensure_ascii=False),
-                    'status_code': status_code,
-                    'response_body': resp_text,
-                    'success': success,
-                })
+            self._record_push_result(
+                lu.line_user_id, messages, success, status_code, resp_text, 'push',
+                channel_id=channel_id, channel_secret=channel_secret,
+                line_user_id=lu.id, redact_token=token)
             if success:
                 sent_ids.append(lu.id)
                 lu.sudo().write({'push_count': lu.push_count + 1})
 
         return sent_ids
 
-    def push_message(self, line_uid, messages, access_token=None, channel_id=None, channel_secret=None):
-        """推播訊息給指定 LINE User ID（低階方法，不寫 log）
-
-        :param line_uid: LINE User ID 字串
-        :param messages: LINE message list（max 5）
-        :return: True/False
-        """
+    def push_message_ex(self, line_uid, messages, access_token=None, channel_id=None,
+                        channel_secret=None):
+        """低階推播的結果版本；每次 logical push 僅記一筆日誌。"""
         token = self._resolve_token(access_token, channel_id, channel_secret)
         if not token:
-            return False
-        success, status_code, _ = self._push_message_raw(token, line_uid, messages)
+            self._record_push_result(
+                line_uid, messages, False, 0, 'no_access_token', 'push_message',
+                channel_id=channel_id, channel_secret=channel_secret,
+                access_token=access_token, attempted=False, redact_token=token)
+            return False, 0, 'no_access_token'
+
+        success, status_code, response_body = self._push_message_raw(token, line_uid, messages)
         if not success and status_code in (401, 403) and not access_token and channel_id and channel_secret:
-            # B-8：token 可能是舊 secret 換出的快取，清掉重試一次
+            # B-8：既有的 credential-refresh retry；僅記最終 logical 結果，
+            # 不對 timeout 重送，也不把單次操作寫成兩筆日誌。
             self._invalidate_cached_token(channel_id, channel_secret)
             token = self._resolve_token(None, channel_id, channel_secret)
-            if not token:
-                return False
-            success, _, _ = self._push_message_raw(token, line_uid, messages)
-        return success
+            if token:
+                success, status_code, response_body = self._push_message_raw(
+                    token, line_uid, messages)
+
+        self._record_push_result(
+            line_uid, messages, success, status_code, response_body, 'push_message',
+            channel_id=channel_id, channel_secret=channel_secret,
+            access_token=access_token, redact_token=token)
+        if success:
+            self._increment_low_level_push_count(line_uid)
+        return success, status_code, response_body
+
+    def push_message(self, line_uid, messages, access_token=None, channel_id=None, channel_secret=None):
+        """推播訊息給指定 LINE User ID，回傳值維持 True/False 相容。"""
+        return self.push_message_ex(
+            line_uid, messages, access_token=access_token,
+            channel_id=channel_id, channel_secret=channel_secret,
+        )[0]
 
     def _push_message_raw(self, token, line_uid, messages):
         """實際推播"""
