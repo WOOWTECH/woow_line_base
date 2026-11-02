@@ -1235,3 +1235,14 @@ class LineApiService(models.AbstractModel):
             audience_group_id, access_token=access_token,
             channel_id=channel_id, channel_secret=channel_secret,
         )[0]
+
+
+# line.api.service 只供伺服器端使用（controller、cron、其他 model 以 Python 呼叫）。
+# 它的 public method 會用 sudo 讀全域憑證並代表官方帳號呼叫 LINE API，
+# 不能讓任何登入使用者經 /web/dataset/call_kw 直接呼叫。
+# api.private 只擋 RPC，不影響 Python 呼叫；Odoo 檢查整條 MRO，
+# 所以下游模組覆寫這些 method 時仍然是 private。
+for _attr_name, _attr_value in list(vars(LineApiService).items()):
+    if not _attr_name.startswith('_') and callable(_attr_value):
+        api.private(_attr_value)
+del _attr_name, _attr_value

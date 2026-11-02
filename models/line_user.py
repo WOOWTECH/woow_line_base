@@ -4,6 +4,7 @@
 import logging
 
 from odoo import api, fields, models
+from odoo.tools import escape_psql
 
 _logger = logging.getLogger(__name__)
 
@@ -65,6 +66,10 @@ class LineUser(models.Model):
     # ------------------------------------------------------------------
     # 綁定 / 解綁
     # ------------------------------------------------------------------
+    # 下面以 sudo 建立、綁定 line.user 或改寫聯絡人的 method 只供伺服器端
+    # （webhook／LIFF controller、wizard、migration）呼叫，一律 @api.private，
+    # 不能經 RPC 由使用者自己帶 LINE UID、email 或 partner 進來。
+    # View 按鈕用的 action_bind_partner、unbind 維持 public，受 ACL 保護。
 
     def action_bind_partner(self):
         """View 按鈕：開啟綁定聯絡人向導"""
@@ -78,6 +83,7 @@ class LineUser(models.Model):
             'context': {'default_line_user_id': self.id},
         }
 
+    @api.private
     def bind_partner(self, partner_id):
         self.ensure_one()
         partner = self.env['res.partner'].browse(partner_id)
@@ -136,34 +142,38 @@ class LineUser(models.Model):
         策略：
         1. 若 line.user 已有 partner_id → 跳過
         2. context 有 skip_auto_bind → 跳過（wizard 手動綁定時用）
-        3. 若有 email → 搜尋同 email 的 partner，找到則綁定
+        3. 若有 email 且已有同 email 的 partner → 不綁定、也不另建，維持未綁定
         4. 否則 → 建立新 partner，再綁定
+
+        第 3 點：LINE 回傳的 email 沒有「已驗證屬於本人」的保證，只憑它綁定既有
+        partner，等於讓任何人用別人的 email 取得對方的身分（下游 LIFF 會據此發出
+        portal session）。要綁到既有 partner，必須另外證明擁有該信箱（LIFF 的確認信）
+        或由員工用「綁定聯絡人」精靈手動綁定。
         """
         if line_user.partner_id:
             return
         if self.env.context.get('skip_auto_bind'):
             return
         Partner = self.env['res.partner'].sudo()
-        partner = None
-        if line_user.email:
-            partner = Partner.search([('email', '=', line_user.email)], limit=1)
-        if not partner:
-            name = line_user.display_name or ('LINE ' + line_user.line_user_id[:8])
-            vals = {
-                'name': name,
-                'email': line_user.email or False,
-            }
-            # 不指定語言的話，聯絡人會拿到建立當下環境的語言（webhook 下多半是 en_US），
-            # 之後 Odoo 寄給這位客人的範本信件（行事曆邀請、報價單…）全部變英文（H-17）。
-            lang = self._active_lang(line_user.preferred_lang)
-            if lang:
-                vals['lang'] = lang
-            partner = Partner.create(vals)
-            _logger.info('LINE: 自動建立 partner %s (id=%s) for %s',
-                         partner.name, partner.id, line_user.line_user_id)
-        else:
-            _logger.info('LINE: email 匹配綁定 partner %s (id=%s) for %s',
-                         partner.name, partner.id, line_user.line_user_id)
+        # 不分大小寫的精確比對（escape_psql 讓 % 與 _ 不被當成萬用字元）
+        if line_user.email and Partner.search_count(
+                [('email', '=ilike', escape_psql(line_user.email.strip()))], limit=1):
+            _logger.info('LINE: %s 的 email 對應到既有聯絡人，需確認信箱擁有權才綁定',
+                         line_user.line_user_id)
+            return
+        name = line_user.display_name or ('LINE ' + line_user.line_user_id[:8])
+        vals = {
+            'name': name,
+            'email': line_user.email or False,
+        }
+        # 不指定語言的話，聯絡人會拿到建立當下環境的語言（webhook 下多半是 en_US），
+        # 之後 Odoo 寄給這位客人的範本信件（行事曆邀請、報價單…）全部變英文（H-17）。
+        lang = self._active_lang(line_user.preferred_lang)
+        if lang:
+            vals['lang'] = lang
+        partner = Partner.create(vals)
+        _logger.info('LINE: 自動建立 partner %s (id=%s) for %s',
+                     partner.name, partner.id, line_user.line_user_id)
         line_user.bind_partner(partner.id)
 
     @api.model
@@ -172,6 +182,7 @@ class LineUser(models.Model):
         （res.partner.lang 只接受已啟用的語言）。"""
         return code if code and self.env['res.lang']._lang_get(code) else False
 
+    @api.private
     @api.model
     def action_fix_partner_languages(self):
         """把綁定 LINE、卻被設成 en_US 的聯絡人改回 LINE 偏好語言。
@@ -207,10 +218,12 @@ class LineUser(models.Model):
     # 查找 / 建立
     # ------------------------------------------------------------------
 
+    @api.private
     @api.model
     def find_by_line_uid(self, line_user_id):
         return self.sudo().search([('line_user_id', '=', line_user_id)], limit=1)
 
+    @api.private
     @api.model
     def create_or_update_from_webhook(self, line_user_id, profile_data=None,
                                        messaging_channel_id=None,
@@ -236,6 +249,7 @@ class LineUser(models.Model):
         self.sudo()._auto_bind_or_create_partner(line_user)
         return line_user
 
+    @api.private
     @api.model
     def create_or_update_from_liff(self, id_token_payload):
         line_uid = id_token_payload.get('sub')
