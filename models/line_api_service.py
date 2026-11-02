@@ -168,7 +168,9 @@ class LineApiService(models.AbstractModel):
             }, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
-            _logger.warning('ID Token 驗證失敗: %s %s', resp.status_code, resp.text)
+            # The provider response may contain the submitted token or other
+            # identifying data. Keep only the status in application logs.
+            _logger.warning('ID Token 驗證失敗: status=%s', resp.status_code)
         except http_requests.RequestException:
             _logger.exception('ID Token 驗證網路錯誤')
         return None
@@ -221,8 +223,10 @@ class LineApiService(models.AbstractModel):
                 'name': profile.get('displayName', ''),
                 'picture': profile.get('pictureUrl', ''),
             }
-        except http_requests.RequestException:
-            _logger.exception('Access Token 驗證網路錯誤')
+        except http_requests.RequestException as exc:
+            # requests exceptions can include the URL, which carries the
+            # access token in the query string for this endpoint.
+            _logger.warning('Access Token 驗證網路錯誤: %s', type(exc).__name__)
         return None
 
     # ------------------------------------------------------------------
