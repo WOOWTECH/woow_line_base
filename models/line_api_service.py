@@ -359,6 +359,16 @@ class LineApiService(models.AbstractModel):
             'types': message_types,
         }, ensure_ascii=False)
 
+    def _push_log_extra_vals(self, push_log, messages):
+        """Extension hook for optional ``line.push.log`` fields.
+
+        The base module deliberately records metadata only.  Site modules may
+        override this hook to add values for fields they own; returning an
+        empty mapping keeps payload content and business references out of the
+        shared layer by default.
+        """
+        return {}
+
     def _get_unique_line_user(self, line_uid):
         """只在 LINE UID 唯一對應時回傳用戶，避免猜測或重複計數。"""
         if not line_uid:
@@ -395,7 +405,7 @@ class LineApiService(models.AbstractModel):
                 safe_response = str(response_body or '')
                 if redact_token:
                     safe_response = safe_response.replace(redact_token, '[redacted]')
-                PushLog.create({
+                vals = {
                     'config_id': self._resolve_push_log_config(
                         channel_id=channel_id, channel_secret=channel_secret,
                         access_token=access_token),
@@ -407,7 +417,14 @@ class LineApiService(models.AbstractModel):
                     'operation_source': operation_source,
                     'result_state': self._push_result_state(
                         success, status_code, attempted=attempted),
-                })
+                }
+                extra_vals = self._push_log_extra_vals(PushLog, messages)
+                if isinstance(extra_vals, dict):
+                    vals.update({
+                        key: value for key, value in extra_vals.items()
+                        if key in PushLog._fields and key not in vals
+                    })
+                PushLog.create(vals)
         except Exception:
             _logger.exception('LINE push 日誌寫入失敗（發送結果不受影響）')
 
@@ -417,7 +434,42 @@ class LineApiService(models.AbstractModel):
             return
         line_user = self._get_unique_line_user(line_uid)
         if line_user:
-            line_user.sudo().write({'push_count': line_user.push_count + 1})
+            self._bump_push_count(line_user)
+
+    def _bump_push_count(self, line_user):
+        """Best-effort atomic counter update that never blocks a push.
+
+        The push log is authoritative.  If another transaction owns the row
+        lock, skip this statistical increment instead of risking a serialization
+        failure in the surrounding business transaction.
+        """
+        line_user = line_user.sudo()
+        if not line_user:
+            return False
+        try:
+            with self.env.cr.savepoint(flush=False):
+                # Flush only these records/this field.  Keeping it inside the
+                # savepoint ensures a database-side flush failure cannot leave
+                # the surrounding business transaction aborted.
+                line_user.flush_recordset(['push_count'])
+                self.env.cr.execute(
+                    'UPDATE line_user SET push_count = COALESCE(push_count, 0) + 1 '
+                    'WHERE id IN (SELECT id FROM line_user WHERE id IN %s '
+                    'FOR UPDATE SKIP LOCKED)',
+                    (tuple(line_user.ids),),
+                )
+                updated = bool(self.env.cr.rowcount)
+        except Exception:  # statistics must never break a push
+            _logger.info(
+                'LINE push count skipped (concurrent lock): line_user=%s',
+                line_user.ids,
+            )
+            updated = False
+        finally:
+            # Never let invalidation trigger another flush after the protected
+            # savepoint has handled a failure.
+            line_user.invalidate_recordset(['push_count'], flush=False)
+        return updated
 
     def push(self, line_users, messages, channel_id=None, channel_secret=None):
         """推播訊息給 line.user recordset（過濾 blocked/disabled/unfollowed）
@@ -452,7 +504,7 @@ class LineApiService(models.AbstractModel):
                 line_user_id=lu.id, redact_token=token)
             if success:
                 sent_ids.append(lu.id)
-                lu.sudo().write({'push_count': lu.push_count + 1})
+                self._bump_push_count(lu)
 
         return sent_ids
 
@@ -973,7 +1025,7 @@ class LineApiService(models.AbstractModel):
             return False
         try:
             resp = http_requests.post(
-                f'{LINE_RICHMENU_ALIAS_URL}/{alias_id}/update',
+                f'{LINE_RICHMENU_ALIAS_URL}/{alias_id}',
                 headers=self._auth_headers(token),
                 json={'richMenuId': richmenu_id}, timeout=10)
             return resp.status_code == 200
